@@ -1,8 +1,10 @@
 import { MUSCLES, EQUIPMENT, FOCUS, EXERCISES, EX } from './data.js';
 import * as G from './engine.js';
 import { bodyMap, heatColor } from './body.js';
+import { CUES } from './cues.js';
 
-const KEY = 'forge.v1';
+const KEY = 'wezza.v1';
+const LEGACY_KEYS = ['forge.v1'];
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -11,22 +13,28 @@ const DEFAULT = {
   profile: {
     onboarded: false, name: '', goal: 'hypertrophy', level: 'intermediate', sex: 'male',
     bodyweight: 75, unit: 'kg', minutes: 45, equipment: Object.keys(EQUIPMENT),
-    excluded: [], favorites: [], warmups: true, core: true, restOverride: 0, sound: true,
+    excluded: [], favorites: [], warmups: true, core: true, restOverride: 0, sound: true, weeklyGoal: 3,
   },
   workouts: [],
+  routines: [],
+  custom: [],
+  body: [],
   active: null,
   plan: null,
-  ui: { tab: 'train', focus: 'auto', custom: [], progressEx: null },
+  ui: { tab: 'train', focus: 'auto', custom: [], progressEx: null, calMonth: null },
 };
 
 let state = load();
 function load() {
   try {
-    const s = JSON.parse(localStorage.getItem(KEY));
+    let raw = localStorage.getItem(KEY);
+    for (const k of LEGACY_KEYS) if (!raw) raw = localStorage.getItem(k);
+    const s = JSON.parse(raw);
     if (s) return { ...DEFAULT, ...s, profile: { ...DEFAULT.profile, ...s.profile }, ui: { ...DEFAULT.ui, ...s.ui } };
   } catch {}
   return structuredClone(DEFAULT);
 }
+G.registerCustom(state.custom);
 function save() { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch {} }
 
 const unit = () => state.profile.unit;
@@ -69,6 +77,15 @@ function icon(name) {
     plate: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4z',
     flame: 'M12 22c4 0 7-3 7-7 0-5-5-7-5-12-3 2-5 5-5 8-1-1-2-2-2-4-2 2-2 5-2 8 0 4 3 7 7 7z',
     trash: 'M4 7h16M10 11v6M14 11v6M5 7l1 13h12l1-13M9 7V4h6v3',
+    more: 'M5 12h.01M12 12h.01M19 12h.01',
+    link: 'M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1',
+    note: 'M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4',
+    share: 'M12 3v12M7 8l5-5 5 5M5 14v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5',
+    timer: 'M12 21a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM12 9v4l2 2M9 2h6',
+    calc: 'M6 3h12a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM8 7h8M8 12h.01M12 12h.01M16 12h.01M8 16h.01M12 16h.01M16 16h.01',
+    save: 'M5 3h11l3 3v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM8 3v5h7M8 21v-7h8v7',
+    scale: 'M5 21h14a1 1 0 0 0 1-1l-1-14a1 1 0 0 0-1-1H6a1 1 0 0 0-1 1L4 20a1 1 0 0 0 1 1zM12 9l2-2',
+    play: 'M7 4l13 8-13 8z',
   }[name];
   return `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="${p}"/></svg>`;
 }
@@ -93,7 +110,7 @@ function navView() {
 function onboardingView() {
   const p = state.profile;
   return `<main class="view onboard">
-    <div class="brand"><span class="logo">${icon('flame')}</span><h1>Forge</h1></div>
+    <div class="brand"><img class="logo" src="icons/icon.svg" alt=""><h1>WeZza</h1></div>
     <p class="lede">Workouts that adapt to how recovered each muscle is, and get a little harder every time you beat them.</p>
 
     <section class="card">
@@ -156,7 +173,10 @@ function trainView() {
   <header class="top">
     <div><p class="eyebrow">${greet}${state.profile.name ? ', ' + esc(state.profile.name) : ''}</p>
     <h1>Today's workout</h1></div>
-    ${streak ? `<div class="streak" title="Weekly streak">${icon('flame')}<b>${streak}</b><span>wk</span></div>` : ''}
+    <div class="row tight">
+      ${streak ? `<div class="streak" title="Weekly streak">${icon('flame')}<b>${streak}</b><span>wk</span></div>` : ''}
+      ${goalRing(52)}
+    </div>
   </header>
 
   <section class="card mapcard">
@@ -175,10 +195,14 @@ function trainView() {
     ${chip('focus', 'custom', 'Pick muscles', selecting)}
   </div>
 
+  ${routinesRow()}
+
   <section class="plan">
     <div class="cardhead">
-      <h3>${plan.exercises.length} exercises · ~${G.estimateMinutes(plan.exercises)} min</h3>
+      <div><h3>${plan.title ? esc(plan.title) : `${plan.exercises.length} exercises`}</h3>
+        <p class="muted sm">${plan.title ? `${plan.exercises.length} exercises · ` : ''}~${G.estimateMinutes(plan.exercises)} min</p></div>
       <div class="row tight">
+        <button class="btn ghost sm" data-act="save-routine" data-val="plan" aria-label="Save as routine" ${plan.exercises.length ? '' : 'disabled'}>${icon('save')}</button>
         <button class="btn ghost sm" data-act="time-cycle">${state.profile.minutes} min</button>
         <button class="btn ghost sm" data-act="regen" aria-label="Regenerate">${icon('refresh')}</button>
       </div>
@@ -196,8 +220,8 @@ function planItem(e, i) {
   const work = e.sets.filter(s => !s.warmup);
   const s0 = work[0] || { reps: 0, weight: 0 };
   const load = d.bw && !s0.weight ? (d.timed ? `${s0.reps}s` : `${s0.reps} reps`) : `${s0.reps}${d.timed ? 's' : ''} × ${W(s0.weight)} ${unit()}${d.perHand ? ' ea' : ''}`;
-  return `<article class="exrow">
-    <div class="exnum">${i + 1}</div>
+  return `<article class="exrow ${e.superset ? 'ss' : ''}" ${e.superset ? `style="--ss:${ssColor(e.superset)}"` : ''}>
+    <div class="exnum">${e.superset ? esc(e.superset) : i + 1}</div>
     <div class="exmain" data-act="ex-info" data-val="${d.id}">
       <h4>${esc(d.name)}</h4>
       <p>${work.length} sets · ${load}</p>
@@ -206,6 +230,33 @@ function planItem(e, i) {
     <button class="icbtn" data-act="swap" data-ctx="plan" data-i="${i}" aria-label="Swap">${icon('swap')}</button>
     <button class="icbtn" data-act="remove" data-ctx="plan" data-i="${i}" aria-label="Remove">${icon('x')}</button>
   </article>`;
+}
+
+function goalRing(size) {
+  const goal = state.profile.weeklyGoal;
+  const n = G.weeklyVolume(state, 1)[0].count;
+  const r = size / 2 - 5, c = 2 * Math.PI * r, pct = Math.min(1, n / goal);
+  return `<button class="ring" data-act="tab" data-val="progress" title="${n} of ${goal} workouts this week" style="width:${size}px;height:${size}px">
+    <svg viewBox="0 0 ${size} ${size}"><circle cx="${size / 2}" cy="${size / 2}" r="${r}" class="ring-bg"/>
+    <circle cx="${size / 2}" cy="${size / 2}" r="${r}" class="ring-fg" stroke-dasharray="${c * pct} ${c}" transform="rotate(-90 ${size / 2} ${size / 2})"/></svg>
+    <span><b>${n}</b>/${goal}</span></button>`;
+}
+
+const SS_COLORS = ['#ff8a3d', '#3ec7ff', '#c084fc', '#ff5c93', '#facc15'];
+const ssColor = g => SS_COLORS[(g.charCodeAt(0) - 65) % SS_COLORS.length];
+
+function routinesRow() {
+  const rs = state.routines;
+  if (!rs.length) return '';
+  return `<section><div class="cardhead"><h3>My routines</h3><span class="muted sm">${rs.length}</span></div>
+    <div class="routines">${rs.map(r => `<button class="routine" data-act="open-routine" data-val="${r.id}">
+      <b>${esc(r.name)}</b><span class="muted sm">${r.exercises.length} exercises</span>
+      <span class="muted sm">${r.exercises.slice(0, 3).map(e => esc(EX[e.exId]?.name || '')).join(', ')}</span></button>`).join('')}</div></section>`;
+}
+
+function planFromRoutine(r) {
+  const exercises = r.exercises.filter(e => EX[e.exId]).map(e => ({ ...G.buildExercise(state, e.exId, e.sets), superset: e.superset || null }));
+  state.plan = { exercises, targets: [], focus: 'routine', title: r.name, routineId: r.id };
 }
 
 function newPlan(seed = Date.now()) {
@@ -230,6 +281,7 @@ function activeView() {
   <main class="view workout">
     ${a.exercises.map((e, i) => activeExercise(e, i)).join('')}
     <button class="btn ghost wide" data-act="add-ex" data-ctx="active">${icon('plus')} Add exercise</button>
+    <label class="field">Workout notes<textarea data-field="wnote" rows="3" placeholder="How did it feel? Sleep, energy, anything worth remembering">${esc(a.notes || '')}</textarea></label>
   </main>
   <div id="restbar" class="restbar ${a.restEnd && a.restEnd > Date.now() ? 'show' : ''}">
     <span class="muted">Rest</span><b id="resttime">0:00</b>
@@ -246,10 +298,10 @@ function activeExercise(e, i) {
   let wi = 0;
   const rows = e.sets.map((s, j) => {
     const p = s.warmup ? null : prev[wi++];
-    const label = s.warmup ? 'W' : (j - e.sets.filter((x, k) => k < j && x.warmup).length + 1);
+    const label = s.warmup ? 'W' : s.kind === 'drop' ? 'D' : s.kind === 'failure' ? 'F' : (j - e.sets.filter((x, k) => k < j && x.warmup).length + 1);
     const prevTxt = p ? (d.bw && !p.weight ? `${p.reps}${d.timed ? 's' : ''}` : `${W(p.weight)}×${p.reps}`) : '—';
-    return `<div class="setrow ${s.done ? 'done' : ''} ${s.warmup ? 'warm' : ''}">
-      <span class="setn">${label}</span>
+    return `<div class="setrow ${s.done ? 'done' : ''} ${s.warmup ? 'warm' : ''} ${s.kind || ''}">
+      <button class="setn" data-act="set-kind" data-i="${i}" data-j="${j}" aria-label="Change set type">${label}</button>
       <span class="prev muted">${prevTxt}</span>
       <input type="number" inputmode="decimal" step="any" data-field="w" data-i="${i}" data-j="${j}" value="${s.weight ? W(s.weight) : (d.bw ? '' : '0')}" placeholder="${d.bw ? 'BW' : '0'}" aria-label="Weight">
       <input type="number" inputmode="numeric" data-field="r" data-i="${i}" data-j="${j}" value="${s.reps || ''}" placeholder="0" aria-label="${d.timed ? 'Seconds' : 'Reps'}">
@@ -257,23 +309,25 @@ function activeExercise(e, i) {
     </div>`;
   }).join('');
 
-  return `<section class="card excard ${allDone ? 'complete' : ''}">
+  const ssList = e.superset ? state.active.exercises.filter(x => x.superset === e.superset) : [];
+  return `<section class="card excard ${allDone ? 'complete' : ''} ${e.superset ? 'ss' : ''}" ${e.superset ? `style="--ss:${ssColor(e.superset)}"` : ''}>
+    ${e.superset ? `<p class="sslabel">${icon('link')} Superset ${esc(e.superset)} · ${ssList.indexOf(e) + 1} of ${ssList.length}</p>` : ''}
     <div class="cardhead">
       <div data-act="ex-info" data-val="${d.id}" class="grow">
         <h3>${esc(d.name)}</h3>
         <p class="muted sm">${d.primary.map(m => MUSCLES[m].name).join(', ')} · target ${e.target?.lo ?? ''}–${e.target?.hi ?? ''}${d.timed ? 's' : ' reps'}${d.perHand ? ' · per hand' : ''}</p>
         ${e.note ? `<p class="accent sm">${esc(e.note)}</p>` : ''}
+        ${e.notes ? `<p class="exnote sm">${icon('note')} ${esc(e.notes)}</p>` : ''}
       </div>
       ${d.bar ? `<button class="icbtn" data-act="plates" data-i="${i}" aria-label="Plate calculator">${icon('plate')}</button>` : ''}
-      <button class="icbtn" data-act="swap" data-ctx="active" data-i="${i}" aria-label="Swap">${icon('swap')}</button>
-      <button class="icbtn" data-act="remove" data-ctx="active" data-i="${i}" aria-label="Remove">${icon('x')}</button>
+      <button class="icbtn" data-act="ex-menu" data-i="${i}" aria-label="More options">${icon('more')}</button>
     </div>
     <div class="sethead"><span>Set</span><span>Previous</span><span>${unit()}</span><span>${d.timed ? 'Sec' : 'Reps'}</span><span></span></div>
     ${rows}
     <div class="row tight">
       <button class="btn ghost sm" data-act="add-set" data-i="${i}">${icon('plus')} Set</button>
       ${e.sets.length > 1 ? `<button class="btn ghost sm" data-act="del-set" data-i="${i}">Remove set</button>` : ''}
-      <span class="muted sm grow right">Rest ${fmtDur((e.rest || 90) * 1000)}</span>
+      <button class="btn ghost sm grow-right" data-act="ex-rest" data-i="${i}">${icon('timer')} ${fmtDur((e.rest || 90) * 1000)}</button>
     </div>
   </section>`;
 }
@@ -282,7 +336,8 @@ function activeExercise(e, i) {
 function progressView() {
   const ws = state.workouts;
   if (!ws.length) return `<header class="top"><h1>Progress</h1></header>
-    <div class="empty big">${icon('progress')}<p>Finish your first workout and your strength trends, PRs and weekly volume will show up here.</p></div>`;
+    <div class="empty">${icon('progress')}<p>Finish your first workout and your strength trends, PRs and weekly volume will show up here.</p></div>
+    ${toolsCard()}${bodyCard()}${badgesCard()}`;
 
   const weekly = G.weeklyVolume(state);
   const thisWeek = weekly.at(-1);
@@ -304,10 +359,10 @@ function progressView() {
   }));
   const pb = exId ? G.personalBests(state, exId) : null;
 
-  return `<header class="top"><h1>Progress</h1></header>
+  return `<header class="top"><h1>Progress</h1>${goalRing(52)}</header>
   <div class="tiles">
     <div class="tile"><b>${ws.length}</b><span>Workouts</span></div>
-    <div class="tile"><b>${thisWeek.count}</b><span>This week</span></div>
+    <div class="tile"><b>${thisWeek.count}/${state.profile.weeklyGoal}</b><span>This week</span></div>
     <div class="tile"><b>${G.streakWeeks(state)}</b><span>Week streak</span></div>
     <div class="tile"><b>${fmtBig(G.toDisplay(totalVol, unit()))}</b><span>${unit()} lifted</span></div>
   </div>
@@ -334,7 +389,10 @@ function progressView() {
     <div class="hbars">${Object.entries(smuscle).sort((a, b) => b[1] - a[1]).map(([m, v]) => `
       <div class="hbar"><span>${MUSCLES[m].name}</span><i><em style="width:${Math.min(100, v / 20 * 100)}%;${v >= 10 ? '' : 'opacity:.55'}"></em></i><b>${+v.toFixed(1)}</b></div>`).join('')}
     </div>
-  </section>`;
+  </section>
+  ${bodyCard()}
+  ${badgesCard()}
+  ${toolsCard()}`;
 }
 
 function lineChart(pts, label) {
@@ -375,13 +433,15 @@ function historyView() {
   const ws = [...state.workouts].sort((a, b) => b.start - a.start);
   if (!ws.length) return `<header class="top"><h1>History</h1></header>
     <div class="empty big">${icon('history')}<p>No workouts yet. Your log lives here — on this device, no account needed.</p></div>`;
-  return `<header class="top"><h1>History</h1><span class="muted">${ws.length} workouts</span></header>
+  return `<header class="top"><h1>History</h1><span class="muted">${ws.length} workout${ws.length === 1 ? '' : 's'}</span></header>
+  ${calendarCard()}
   ${ws.map(w => {
     const prs = w.prs?.length || 0;
     return `<article class="card hist" data-act="open-workout" data-val="${w.id}">
       <div class="cardhead"><h3>${esc(w.title || 'Workout')}</h3><span class="muted sm">${fmtDate(w.start)}</span></div>
       <p class="muted sm">${fmtDur((w.end || w.start) - w.start)} · ${fmtBig(G.toDisplay(G.workoutVolume(w), unit()))} ${unit()} · ${w.exercises.length} exercises${prs ? ` · <span class="accent">${prs} PR${prs > 1 ? 's' : ''}</span>` : ''}</p>
       <p class="sm">${w.exercises.map(e => esc(EX[e.exId]?.name)).join(' · ')}</p>
+      ${w.notes ? `<p class="exnote sm">${icon('note')} ${esc(w.notes)}</p>` : ''}
     </article>`;
   }).join('')}`;
 }
@@ -391,14 +451,20 @@ function workoutDetail(id) {
   if (!w) return '';
   return `<h2>${esc(w.title || 'Workout')}</h2>
   <p class="muted">${new Date(w.start).toLocaleString()} · ${fmtDur(w.end - w.start)}</p>
+  ${w.notes ? `<p class="exnote">${icon('note')} ${esc(w.notes)}</p>` : ''}
   ${w.prs?.length ? `<div class="prlist">${w.prs.map(p => `<div>🏆 ${esc(EX[p.exId]?.name)} — ${p.kind} <b>${p.w ? W(p.value) + ' ' + unit() : p.value}</b></div>`).join('')}</div>` : ''}
   ${w.exercises.map(e => {
     const d = EX[e.exId]; const sets = G.workingSets(e);
-    return `<div class="detail-ex"><h4>${esc(d?.name)}</h4>
-      <p class="muted sm">${sets.map(s => d.bw && !s.weight ? `${s.reps}${d.timed ? 's' : ''}` : `${W(s.weight)}×${s.reps}`).join(' · ') || 'No sets completed'}</p></div>`;
+    return `<div class="detail-ex"><h4>${e.superset ? `<span class="sstag" style="--ss:${ssColor(e.superset)}">${esc(e.superset)}</span> ` : ''}${esc(d?.name)}</h4>
+      <p class="muted sm">${sets.map(s => (s.kind ? s.kind[0].toUpperCase() + ':' : '') + (d.bw && !s.weight ? `${s.reps}${d.timed ? 's' : ''}` : `${W(s.weight)}×${s.reps}`)).join(' · ') || 'No sets completed'}</p>
+      ${e.notes ? `<p class="exnote sm">${esc(e.notes)}</p>` : ''}</div>`;
   }).join('')}
-  <div class="row"><button class="btn ghost danger" data-act="delete-workout" data-val="${w.id}">${icon('trash')} Delete</button>
-  <button class="btn ghost" data-act="repeat-workout" data-val="${w.id}">${icon('refresh')} Repeat this workout</button></div>`;
+  <div class="row wrap">
+    <button class="btn ghost" data-act="repeat-workout" data-val="${w.id}">${icon('refresh')} Repeat</button>
+    <button class="btn ghost" data-act="save-routine" data-val="${w.id}">${icon('save')} Save routine</button>
+    <button class="btn ghost" data-act="share-workout" data-val="${w.id}">${icon('share')} Share</button>
+    <button class="btn ghost danger" data-act="delete-workout" data-val="${w.id}">${icon('trash')} Delete</button>
+  </div>`;
 }
 
 // ----- profile -----
@@ -419,6 +485,8 @@ function profileView() {
     <div class="chips">${chip('p-level', 'beginner', 'Beginner', p.level === 'beginner')}${chip('p-level', 'intermediate', 'Intermediate', p.level === 'intermediate')}${chip('p-level', 'advanced', 'Advanced', p.level === 'advanced')}</div>
     <h3>Session length</h3>
     <div class="chips">${[20, 30, 45, 60, 75, 90].map(m => chip('p-min', m, m + ' min', p.minutes === m)).join('')}</div>
+    <h3>Weekly goal</h3>
+    <div class="chips">${[2, 3, 4, 5, 6].map(n => chip('p-goalw', n, n + '× / week', p.weeklyGoal === n)).join('')}</div>
   </section>
   <section class="card">
     <h3>Equipment</h3>
@@ -434,7 +502,15 @@ function profileView() {
   </section>
   <section class="card">
     <div class="cardhead"><h3>Exercise preferences</h3><button class="btn ghost sm" data-act="manage-ex">Manage</button></div>
-    <p class="muted sm">${p.favorites.length} favorite · ${p.excluded.length} excluded</p>
+    <p class="muted sm">${p.favorites.length} favorite · ${p.excluded.length} excluded · ${state.custom.length} custom</p>
+    <button class="btn ghost" data-act="custom-ex">${icon('plus')} Create custom exercise</button>
+  </section>
+  <section class="card">
+    <div class="cardhead"><h3>Routines</h3><span class="muted sm">${state.routines.length}</span></div>
+    ${state.routines.length ? state.routines.map(r => `<div class="pick static"><b>${esc(r.name)}</b>
+      <div class="row tight"><button class="chip" data-act="open-routine" data-val="${r.id}">Open</button>
+      <button class="chip" data-act="delete-routine" data-val="${r.id}">Delete</button></div></div>`).join('')
+      : '<p class="muted sm">Save any workout as a routine to reuse it — the weights still progress automatically.</p>'}
   </section>
   <section class="card">
     <h3>Your data</h3>
@@ -445,7 +521,7 @@ function profileView() {
       <button class="btn ghost danger" data-act="reset">Reset all</button>
     </div>
   </section>
-  <p class="muted sm center">Forge · free, offline, private</p>`;
+  <p class="muted sm center">WeZza · free, offline, private</p>`;
 }
 const toggle = (k, label) => `<label class="toggle"><span>${label}</span><input type="checkbox" data-field="t-${k}" ${state.profile[k] ? 'checked' : ''}><i></i></label>`;
 
@@ -465,6 +541,7 @@ function closeModal() { document.querySelectorAll('.modal-wrap').forEach(m => m.
 function pickerModal(title, list, act, ctx, i) {
   const m = modal(`<h2>${title}</h2>
     <input type="search" class="search" placeholder="Search exercises" data-field="search">
+    ${act === 'do-add' ? `<button class="btn ghost sm" data-act="custom-ex" data-ctx="${ctx}">${icon('plus')} Create custom exercise</button>` : ''}
     <div class="chips scroll" id="mfilter">${chip('mfilter', '', 'All', true)}${Object.entries(MUSCLES).map(([k, v]) => chip('mfilter', k, v.name, false)).join('')}</div>
     <div class="picklist">${list.map(e => `
       <button class="pick" data-act="${act}" data-val="${e.id}" data-ctx="${ctx}" data-i="${i ?? ''}" data-name="${esc(e.name.toLowerCase())}" data-m="${[...e.primary, ...e.secondary].join(' ')}">
@@ -502,11 +579,13 @@ function exInfo(id) {
       <div><b>${d.bw && !p.weight ? p.reps : W(p.weight)}</b><span>Next target</span></div>
     </div>
     <p class="accent sm">${esc(p.note)}</p>
+    ${CUES[id] ? `<h3>How to</h3><ol class="cues">${CUES[id].map(c => `<li>${esc(c)}</li>`).join('')}</ol>` : ''}
     ${hist.length ? `<h3>Recent sessions</h3>${hist.slice(0, 5).map(h => `<div class="detail-ex"><span class="muted sm">${fmtDate(h.date)}</span>
       <p class="sm">${h.sets.map(s => d.bw && !s.weight ? `${s.reps}` : `${W(s.weight)}×${s.reps}`).join(' · ')}</p></div>`).join('')}` : ''}
-    <div class="row">
+    <div class="row wrap">
       <button class="btn ghost" data-act="fav" data-val="${id}">${icon('star')} ${fav ? 'Unfavorite' : 'Favorite'}</button>
       <button class="btn ghost danger" data-act="exclude" data-val="${id}">Never suggest</button>
+      ${d.custom ? `<button class="btn ghost danger" data-act="delete-custom" data-val="${id}">${icon('trash')} Delete exercise</button>` : ''}
     </div>`);
 }
 
@@ -559,10 +638,268 @@ function summaryModal(w) {
     </div>
     ${w.prs.length ? `<h3>🏆 ${w.prs.length} new personal record${w.prs.length > 1 ? 's' : ''}</h3>
       <div class="prlist">${w.prs.map(p => `<div>${esc(EX[p.exId].name)} — ${p.kind} <b>${p.w ? W(p.value) + ' ' + unit() : p.value}</b></div>`).join('')}</div>` : ''}
+    ${w.badges?.length ? `<h3>New achievement${w.badges.length > 1 ? 's' : ''} unlocked</h3>
+      <div class="badges">${G.BADGES.filter(b => w.badges.includes(b.id)).map(b => `<div class="badge earned"><span>${b.icon}</span><b>${b.name}</b></div>`).join('')}</div>` : ''}
     <h3>Muscles worked</h3>
     ${bodyMap(worked)}
+    <div class="row">
+      <button class="btn ghost grow" data-act="share-workout" data-val="${w.id}">${icon('share')} Share</button>
+      ${w.routineId ? '' : `<button class="btn ghost grow" data-act="save-routine" data-val="${w.id}">${icon('save')} Save routine</button>`}
+    </div>
     <button class="btn primary big" data-act="close-modal">Done</button>
   </div>`);
+}
+
+// ----- calendar, body, achievements, tools -----
+function calendarCard() {
+  const now = new Date();
+  const m = state.ui.calMonth ? new Date(state.ui.calMonth) : new Date(now.getFullYear(), now.getMonth(), 1);
+  const year = m.getFullYear(), month = m.getMonth();
+  const days = new Date(year, month + 1, 0).getDate();
+  const lead = (new Date(year, month, 1).getDay() + 6) % 7;
+  const byDay = {};
+  state.workouts.forEach(w => {
+    const d = new Date(w.start);
+    if (d.getFullYear() === year && d.getMonth() === month) (byDay[d.getDate()] ||= []).push(w);
+  });
+  const count = Object.values(byDay).reduce((a, l) => a + l.length, 0);
+  const cells = [...Array(lead).fill('<span></span>')];
+  for (let d = 1; d <= days; d++) {
+    const ws = byDay[d];
+    const today = d === now.getDate() && month === now.getMonth() && year === now.getFullYear();
+    cells.push(ws ? `<button class="day on ${today ? 'today' : ''}" data-act="open-workout" data-val="${ws[0].id}" title="${esc(ws.map(w => w.title).join(', '))}">${d}</button>`
+      : `<span class="day ${today ? 'today' : ''}">${d}</span>`);
+  }
+  return `<section class="card">
+    <div class="cardhead">
+      <button class="icbtn" data-act="cal-move" data-val="-1" aria-label="Previous month">‹</button>
+      <div class="center"><h3>${m.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}</h3><p class="muted sm">${count} workout${count === 1 ? '' : 's'}</p></div>
+      <button class="icbtn" data-act="cal-move" data-val="1" aria-label="Next month">›</button>
+    </div>
+    <div class="cal">${['M', 'T', 'W', 'T', 'F', 'S', 'S'].map(d => `<em>${d}</em>`).join('')}${cells.join('')}</div>
+  </section>`;
+}
+
+const lenUnit = () => unit() === 'lb' ? 'in' : 'cm';
+const toLen = cm => unit() === 'lb' ? cm / 2.54 : cm;
+const fromLen = v => unit() === 'lb' ? v * 2.54 : v;
+
+function bodyCard() {
+  const entries = [...state.body].sort((a, b) => a.t - b.t);
+  const last = entries.at(-1);
+  const monthAgo = entries.filter(e => e.t <= Date.now() - 30 * 864e5).at(-1) || entries[0];
+  const delta = last && monthAgo && last !== monthAgo ? G.toDisplay(last.weight - monthAgo.weight, unit()) : null;
+  return `<section class="card">
+    <div class="cardhead"><h3>Body</h3><button class="btn ghost sm" data-act="body-entry">${icon('plus')} Log</button></div>
+    ${last ? `<div class="pbrow">
+      <div><b>${W(last.weight)}</b><span>Weight (${unit()})</span></div>
+      ${last.fat ? `<div><b>${last.fat}%</b><span>Body fat</span></div>` : ''}
+      ${last.waist ? `<div><b>${+toLen(last.waist).toFixed(1)}</b><span>Waist (${lenUnit()})</span></div>` : ''}
+      ${delta != null ? `<div><b>${delta > 0 ? '+' : ''}${delta.toFixed(1)}</b><span>vs 30 days</span></div>` : ''}
+    </div>
+    ${lineChart(entries.map(e => ({ x: e.t, y: G.toDisplay(e.weight, unit()) })), unit()).replace(/Log this exercise in.*?trend\./, 'Log one more weigh-in to see a trend.')}`
+    : '<p class="muted sm">Track bodyweight, body fat and waist over time. Your latest weight also keeps starting-weight estimates accurate.</p>'}
+  </section>`;
+}
+
+function badgesCard() {
+  const list = G.achievements(state);
+  const n = list.filter(b => b.earned).length;
+  return `<section class="card">
+    <div class="cardhead"><h3>Achievements</h3><span class="muted sm">${n}/${list.length}</span></div>
+    <div class="badges">${list.map(b => `<div class="badge ${b.earned ? 'earned' : ''}" title="${esc(b.desc)}">
+      <span>${b.icon}</span><b>${b.name}</b><small>${b.earned ? 'Unlocked' : esc(b.desc)}</small>
+      ${b.earned ? '' : `<i><em style="width:${b.pct * 100}%"></em></i>`}</div>`).join('')}</div>
+  </section>`;
+}
+
+function toolsCard() {
+  return `<section class="card">
+    <h3>Tools</h3>
+    <div class="tools">
+      <button data-act="tool-1rm">${icon('calc')}<span>1RM calculator</span></button>
+      <button data-act="tool-plates">${icon('plate')}<span>Plate calculator</span></button>
+      <button data-act="tool-interval">${icon('timer')}<span>Interval timer</span></button>
+    </div>
+  </section>`;
+}
+
+function oneRMModal() {
+  const m = modal(`<h2>1RM calculator</h2>
+    <div class="row"><label class="field grow">Weight (${unit()})<input type="number" inputmode="decimal" id="orm-w" value="100"></label>
+    <label class="field grow">Reps<input type="number" inputmode="numeric" id="orm-r" value="5"></label></div>
+    <div id="orm-out"></div>`);
+  const upd = () => {
+    const w = +$('#orm-w', m).value || 0, r = +$('#orm-r', m).value || 0;
+    const orm = G.e1rm(w, r);
+    $('#orm-out', m).innerHTML = `<div class="pbrow"><div><b>${Math.round(orm * 2) / 2}</b><span>Estimated 1RM (${unit()})</span></div></div>
+      <table class="pct"><tr><th>%</th><th>${unit()}</th><th>Reps</th></tr>
+      ${[100, 95, 90, 85, 80, 75, 70, 65, 60, 50].map(p => `<tr><td>${p}%</td><td>${Math.round(orm * p / 100 * 2) / 2}</td><td>${G.repsAtPct(p / 100)}</td></tr>`).join('')}</table>`;
+  };
+  m.addEventListener('input', upd); upd();
+}
+
+let interval = null;
+function intervalModal() {
+  const m = modal(`<h2>Interval timer</h2>
+    <div id="iv-setup"><div class="row">
+      <label class="field grow">Work (s)<input type="number" inputmode="numeric" id="iv-work" value="40"></label>
+      <label class="field grow">Rest (s)<input type="number" inputmode="numeric" id="iv-rest" value="20"></label>
+      <label class="field grow">Rounds<input type="number" inputmode="numeric" id="iv-rounds" value="8"></label></div>
+      <p class="muted sm">Tabata: 20/10 × 8 · EMOM: 60/0 × 10</p>
+      <button class="btn primary big" data-act="iv-start">${icon('play')} Start</button></div>
+    <div id="iv-run" hidden><div class="ivclock"><p id="iv-phase">Get ready</p><b id="iv-time">0:05</b><p class="muted" id="iv-round"></p></div>
+      <button class="btn ghost wide" data-act="iv-stop">Stop</button></div>`);
+  return m;
+}
+function runInterval() {
+  const cfg = { work: +$('#iv-work').value || 40, rest: +$('#iv-rest').value || 0, rounds: +$('#iv-rounds').value || 1 };
+  $('#iv-setup').hidden = true; $('#iv-run').hidden = false;
+  interval = { cfg, phase: 'ready', round: 0, end: Date.now() + 5000 };
+  clearInterval(interval.timer);
+  interval.timer = setInterval(() => {
+    const el = $('#iv-time');
+    if (!el || !interval) { clearInterval(interval?.timer); interval = null; return; }
+    const left = interval.end - Date.now();
+    if (left <= 0) {
+      const { cfg } = interval;
+      if (interval.phase === 'work' && cfg.rest && interval.round < cfg.rounds) { interval.phase = 'rest'; interval.end = Date.now() + cfg.rest * 1000; }
+      else if (interval.round < cfg.rounds) { interval.phase = 'work'; interval.round++; interval.end = Date.now() + cfg.work * 1000; }
+      else { $('#iv-phase').textContent = 'Done 🎉'; el.textContent = '0:00'; beep(); clearInterval(interval.timer); interval = null; return; }
+      if (state.profile.sound) { beep(); navigator.vibrate?.(200); }
+    }
+    $('#iv-phase').textContent = { ready: 'Get ready', work: 'Work', rest: 'Rest' }[interval.phase];
+    $('.ivclock').dataset.phase = interval.phase;
+    $('#iv-round').textContent = interval.round ? `Round ${interval.round} of ${interval.cfg.rounds}` : '';
+    el.textContent = fmtDur(Math.max(0, interval.end - Date.now()) + 999);
+  }, 200);
+}
+
+function plateTool() {
+  const show = kg => {
+    const r = G.plates(kg, unit());
+    return `<p>${r.plates.length ? `Each side: <b>${r.plates.join(' + ')}</b>` : 'Empty bar'} <span class="muted">(bar ${r.bar} ${unit()})</span></p>
+      ${r.remainder ? `<p class="muted sm">${r.remainder} ${unit()} per side can't be made with standard plates.</p>` : ''}`;
+  };
+  const start = unit() === 'lb' ? 135 : 60;
+  const m = modal(`<h2>Plate calculator</h2>
+    <label class="field">Total weight (${unit()})<input type="number" inputmode="decimal" id="plate-in" value="${start}"></label>
+    <div id="plate-out">${show(G.fromDisplay(start, unit()))}</div>`);
+  $('#plate-in', m).addEventListener('input', ev => { $('#plate-out', m).innerHTML = show(G.fromDisplay(+ev.target.value || 0, unit())); });
+}
+
+function bodyEntryModal() {
+  const last = [...state.body].sort((a, b) => b.t - a.t)[0];
+  modal(`<h2>Log body stats</h2>
+    <label class="field">Weight (${unit()})<input type="number" inputmode="decimal" id="be-w" value="${W(last?.weight ?? state.profile.bodyweight)}"></label>
+    <div class="row">
+      <label class="field grow">Body fat % <input type="number" inputmode="decimal" id="be-f" value="${last?.fat ?? ''}" placeholder="optional"></label>
+      <label class="field grow">Waist (${lenUnit()})<input type="number" inputmode="decimal" id="be-waist" value="${last?.waist ? +toLen(last.waist).toFixed(1) : ''}" placeholder="optional"></label>
+    </div>
+    <button class="btn primary big" data-act="body-save">Save</button>
+    ${state.body.length ? `<h3>Entries</h3>${[...state.body].sort((a, b) => b.t - a.t).slice(0, 10).map(e => `<div class="pick static">
+      <span>${fmtDate(e.t)} · <b>${W(e.weight)} ${unit()}</b>${e.fat ? ` · ${e.fat}%` : ''}</span>
+      <button class="icbtn" data-act="body-del" data-val="${e.t}" aria-label="Delete">${icon('trash')}</button></div>`).join('')}` : ''}`);
+}
+
+function customExModal(ctx) {
+  modal(`<h2>Custom exercise</h2>
+    <label class="field">Name<input type="text" id="cx-name" maxlength="40" placeholder="e.g. Landmine Press"></label>
+    <h3>Primary muscles</h3>
+    <div class="chips" id="cx-prim">${Object.entries(MUSCLES).map(([k, v]) => `<button class="chip" data-act="cx-toggle" data-val="${k}">${v.name}</button>`).join('')}</div>
+    <h3>Secondary muscles <small>optional</small></h3>
+    <div class="chips" id="cx-sec">${Object.entries(MUSCLES).map(([k, v]) => `<button class="chip" data-act="cx-toggle" data-val="${k}">${v.name}</button>`).join('')}</div>
+    <h3>Equipment</h3>
+    <div class="chips" id="cx-eq">${Object.entries(EQUIPMENT).map(([k, v]) => `<button class="chip" data-act="cx-toggle" data-val="${k}">${v}</button>`).join('')}</div>
+    <h3>Type</h3>
+    <div class="chips" id="cx-type"><button class="chip on" data-act="cx-radio" data-val="compound">Compound</button><button class="chip" data-act="cx-radio" data-val="isolation">Isolation</button></div>
+    <div class="chips" id="cx-flags"><button class="chip" data-act="cx-toggle" data-val="bw">Bodyweight</button><button class="chip" data-act="cx-toggle" data-val="timed">Timed (seconds)</button><button class="chip" data-act="cx-toggle" data-val="perHand">Per hand</button><button class="chip" data-act="cx-toggle" data-val="bar">Barbell plates</button></div>
+    <button class="btn primary big" data-act="cx-save" data-ctx="${ctx || ''}">Create exercise</button>`, 'tall');
+}
+
+function exMenu(i) {
+  const list = state.active.exercises, e = list[i], d = EX[e.exId];
+  modal(`<h2>${esc(d.name)}</h2>
+    <div class="sheet">
+      <button data-act="swap" data-ctx="active" data-i="${i}">${icon('swap')} Swap exercise</button>
+      ${i < list.length - 1 ? `<button data-act="ss-link" data-i="${i}">${icon('link')} ${e.superset && list[i + 1].superset === e.superset ? 'Unlink from next' : 'Superset with next'}</button>` : ''}
+      ${e.superset ? `<button data-act="ss-unlink" data-i="${i}">${icon('link')} Remove from superset</button>` : ''}
+      <button data-act="ex-note" data-i="${i}">${icon('note')} ${e.notes ? 'Edit note' : 'Add note'}</button>
+      <button data-act="ex-rest" data-i="${i}">${icon('timer')} Rest timer</button>
+      ${i > 0 ? `<button data-act="ex-move" data-i="${i}" data-val="-1">↑ Move up</button>` : ''}
+      ${i < list.length - 1 ? `<button data-act="ex-move" data-i="${i}" data-val="1">↓ Move down</button>` : ''}
+      <button data-act="ex-info" data-val="${d.id}">${icon('info')} Instructions & history</button>
+      <button class="danger" data-act="remove" data-ctx="active" data-i="${i}">${icon('x')} Remove exercise</button>
+    </div>`);
+}
+
+function routineModal(id) {
+  const r = state.routines.find(x => x.id === id);
+  if (!r) return;
+  modal(`<h2>${esc(r.name)}</h2>
+    <p class="muted sm">Created ${fmtDate(r.created)} · weights progress automatically from your history</p>
+    ${r.exercises.map(e => `<div class="detail-ex"><h4>${e.superset ? `<span class="sstag" style="--ss:${ssColor(e.superset)}">${esc(e.superset)}</span> ` : ''}${esc(EX[e.exId]?.name || 'Deleted exercise')}</h4><p class="muted sm">${e.sets} sets</p></div>`).join('')}
+    <button class="btn primary big" data-act="load-routine" data-val="${r.id}">Load routine</button>
+    <div class="row"><button class="btn ghost grow" data-act="rename-routine" data-val="${r.id}">${icon('note')} Rename</button>
+    <button class="btn ghost danger grow" data-act="delete-routine" data-val="${r.id}">${icon('trash')} Delete</button></div>`);
+}
+
+function saveRoutine(src) {
+  const exs = src === 'plan' ? state.plan.exercises : state.workouts.find(w => w.id === src)?.exercises;
+  if (!exs?.length) return;
+  const suggested = src === 'plan' ? (state.plan.title || workoutTitle(exs)) : state.workouts.find(w => w.id === src).title;
+  const name = prompt('Routine name', suggested);
+  if (!name) return;
+  state.routines.push({
+    id: uid(), name: name.slice(0, 40), created: Date.now(),
+    exercises: exs.map(e => ({ exId: e.exId, sets: Math.max(1, e.sets.filter(s => !s.warmup).length), superset: e.superset || null })),
+  });
+  toast('Routine saved');
+}
+
+async function shareWorkout(id) {
+  const w = state.workouts.find(x => x.id === id);
+  if (!w) return;
+  const c = document.createElement('canvas');
+  c.width = 1080; c.height = 1350;
+  const g = c.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, 1080, 1350);
+  grad.addColorStop(0, '#14181d'); grad.addColorStop(1, '#0a0c0f');
+  g.fillStyle = grad; g.fillRect(0, 0, 1080, 1350);
+  const font = (wt, px) => `${wt} ${px}px -apple-system, "Segoe UI", Roboto, sans-serif`;
+  g.fillStyle = '#c6f432'; g.font = font(800, 44); g.fillText('WeZza', 80, 120);
+  g.fillStyle = '#8b95a1'; g.font = font(600, 34); g.fillText(new Date(w.start).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' }), 80, 220);
+  g.fillStyle = '#f2f4f6'; g.font = font(800, 92); g.fillText(w.title || 'Workout', 80, 320);
+  const sets = w.exercises.reduce((a, e) => a + G.workingSets(e).length, 0);
+  const stats = [[fmtDur(w.end - w.start), 'Duration'], [fmtBig(G.toDisplay(G.workoutVolume(w), unit())) + ' ' + unit(), 'Volume'], [String(sets), 'Sets']];
+  stats.forEach(([v, l], i) => {
+    const x = 80 + i * 320;
+    g.fillStyle = '#1f242b'; g.beginPath(); g.roundRect(x, 380, 290, 170, 28); g.fill();
+    g.fillStyle = '#f2f4f6'; g.font = font(800, 54); g.fillText(v, x + 30, 470);
+    g.fillStyle = '#8b95a1'; g.font = font(600, 28); g.fillText(l, x + 30, 520);
+  });
+  let y = 650;
+  for (const e of w.exercises.slice(0, 7)) {
+    const d = EX[e.exId], ss = G.workingSets(e);
+    if (!d || !ss.length) continue;
+    const best = ss.reduce((a, b) => G.e1rm(b.weight, b.reps) > G.e1rm(a.weight, a.reps) ? b : a, ss[0]);
+    const pr = w.prs?.some(p => p.exId === e.exId);
+    g.fillStyle = '#f2f4f6'; g.font = font(700, 38); g.fillText((pr ? '🏆 ' : '') + d.name, 80, y);
+    g.fillStyle = '#8b95a1'; g.font = font(500, 32);
+    g.fillText(`${ss.length} × ${d.bw && !best.weight ? best.reps + (d.timed ? 's' : ' reps') : `${W(best.weight)} ${unit()} × ${best.reps}`}`, 80, y + 44);
+    y += 100;
+  }
+  if (w.prs?.length) { g.fillStyle = '#c6f432'; g.font = font(800, 40); g.fillText(`${w.prs.length} personal record${w.prs.length > 1 ? 's' : ''}`, 80, 1270); }
+  g.fillStyle = '#8b95a1'; g.font = font(600, 28); g.textAlign = 'right'; g.fillText('Tracked with WeZza', 1000, 1270);
+  const blob = await new Promise(r => c.toBlob(r, 'image/png'));
+  const file = new File([blob], `wezza-${new Date(w.start).toISOString().slice(0, 10)}.png`, { type: 'image/png' });
+  try {
+    if (navigator.canShare?.({ files: [file] })) { await navigator.share({ files: [file], title: w.title }); return; }
+  } catch (err) { if (err.name === 'AbortError') return; }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(file); a.download = file.name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  toast('Image saved');
 }
 
 // ---------- actions ----------
@@ -571,8 +908,9 @@ let restTimer = null, elapsedTimer = null, wakeLock = null;
 function startWorkout() {
   const plan = state.plan;
   state.active = {
-    id: uid(), start: Date.now(), title: workoutTitle(plan.exercises),
-    exercises: structuredClone(plan.exercises), restEnd: 0,
+    id: uid(), start: Date.now(),
+    title: plan.title || workoutTitle(plan.exercises), routineId: plan.routineId || null,
+    exercises: structuredClone(plan.exercises), restEnd: 0, notes: '',
   };
   state.plan = null;
   save(); render();
@@ -600,9 +938,14 @@ function finishWorkout() {
   if (!done) { if (confirm('No sets completed. Discard this workout?')) discard(); return; }
   a.end = Date.now();
   a.exercises = a.exercises.filter(e => e.sets.some(s => s.done)).map(e => ({ ...e, sets: e.sets.filter(s => s.done) }));
-  const w = { id: a.id, start: a.start, end: a.end, title: a.title, exercises: a.exercises.map(({ exId, sets }) => ({ exId, sets })) };
+  const w = {
+    id: a.id, start: a.start, end: a.end, title: a.title, notes: a.notes || '',
+    exercises: a.exercises.map(({ exId, sets, superset, notes }) => ({ exId, sets, superset: superset || null, notes: notes || '' })),
+  };
   w.prs = G.workoutPRs({ ...state, workouts: [...state.workouts, w] }, w);
+  const before = new Set(G.achievements(state).filter(b => b.earned).map(b => b.id));
   state.workouts.push(w);
+  w.badges = G.achievements(state).filter(b => b.earned && !before.has(b.id)).map(b => b.id);
   state.active = null;
   stopTimers();
   save(); render();
@@ -695,7 +1038,7 @@ const actions = {
     const ctx = el.dataset.ctx, i = +el.dataset.i;
     const list = target(ctx);
     const keepDone = list[i].sets.some(s => s.done);
-    const fresh = G.buildExercise(state, v, list[i].sets.filter(s => !s.warmup).length);
+    const fresh = { ...G.buildExercise(state, v, list[i].sets.filter(s => !s.warmup).length), superset: list[i].superset || null };
     if (keepDone) list.splice(i + 1, 0, fresh); else list[i] = fresh;
     closeModal();
   },
@@ -703,6 +1046,8 @@ const actions = {
     const list = target(el.dataset.ctx), i = +el.dataset.i;
     if (el.dataset.ctx === 'active' && list[i].sets.some(s => s.done) && !confirm('Remove this exercise and its logged sets?')) return 'keep';
     list.splice(i, 1);
+    cleanSupersets(list);
+    closeModal();
   },
   'add-ex': (_, el) => {
     const ctx = el.dataset.ctx;
@@ -718,9 +1063,18 @@ const actions = {
     s.done = !s.done;
     if (s.done) {
       if (!s.reps) s.reps = ex.target?.lo || 8;
-      const rest = s.warmup ? 45 : (ex.rest || 90);
-      const last = ex.sets.every(x => x.done) && i === state.active.exercises.length - 1;
-      if (!last) state.active.restEnd = Date.now() + rest * 1000;
+      const list = state.active.exercises;
+      let rest = s.warmup ? 45 : (ex.rest || 90);
+      if (ex.superset && !s.warmup) {
+        // In a superset, only rest after the last exercise of the round.
+        const group = list.filter(x => x.superset === ex.superset);
+        const doneN = x => x.sets.filter(y => y.done && !y.warmup).length;
+        const after = group.slice(group.indexOf(ex) + 1);
+        if (after.some(x => doneN(x) < doneN(ex) && x.sets.some(y => !y.done))) rest = 0;
+        else rest = Math.max(...group.map(x => x.rest || 90));
+      }
+      const last = ex.sets.every(x => x.done) && i === list.length - 1;
+      state.active.restEnd = !last && rest ? Date.now() + rest * 1000 : 0;
       navigator.vibrate?.(30);
     }
   },
@@ -747,7 +1101,7 @@ const actions = {
   },
   'repeat-workout': v => {
     const w = state.workouts.find(x => x.id === v);
-    state.plan = { exercises: w.exercises.filter(e => EX[e.exId]).map(e => G.buildExercise(state, e.exId, Math.max(2, G.workingSets(e).length))), targets: [], focus: 'repeat' };
+    state.plan = { exercises: w.exercises.filter(e => EX[e.exId]).map(e => ({ ...G.buildExercise(state, e.exId, Math.max(2, G.workingSets(e).length)), superset: e.superset || null })), targets: [], focus: 'repeat', title: w.title };
     state.ui.tab = 'train'; closeModal();
   },
   fav: (v, el) => {
@@ -765,9 +1119,10 @@ const actions = {
   },
   'manage-ex': () => { manageExModal(); return 'keep'; },
   export: () => {
-    const blob = new Blob([JSON.stringify({ app: 'forge', version: 1, exported: new Date().toISOString(), profile: state.profile, workouts: state.workouts }, null, 2)], { type: 'application/json' });
+    const { profile, workouts, routines, custom, body } = state;
+    const blob = new Blob([JSON.stringify({ app: 'wezza', version: 2, exported: new Date().toISOString(), profile, workouts, routines, custom, body }, null, 2)], { type: 'application/json' });
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob); a.download = `forge-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.href = URL.createObjectURL(blob); a.download = `wezza-backup-${new Date().toISOString().slice(0, 10)}.json`;
     a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     return 'keep';
   },
@@ -775,7 +1130,132 @@ const actions = {
     if (!confirm('Erase all workouts and settings on this device?')) return 'keep';
     state = structuredClone(DEFAULT);
   },
+  'p-goalw': v => { state.profile.weeklyGoal = +v; },
+  'cal-move': v => {
+    const now = new Date();
+    const m = state.ui.calMonth ? new Date(state.ui.calMonth) : new Date(now.getFullYear(), now.getMonth(), 1);
+    state.ui.calMonth = new Date(m.getFullYear(), m.getMonth() + +v, 1).getTime();
+  },
+  // routines
+  'save-routine': v => { saveRoutine(v); closeModal(); },
+  'open-routine': v => { routineModal(v); return 'keep'; },
+  'load-routine': v => {
+    planFromRoutine(state.routines.find(r => r.id === v));
+    state.ui.tab = 'train'; closeModal(); window.scrollTo(0, 0);
+  },
+  'rename-routine': v => {
+    const r = state.routines.find(x => x.id === v);
+    const name = prompt('Rename routine', r.name);
+    if (name) r.name = name.slice(0, 40);
+    closeModal();
+  },
+  'delete-routine': v => {
+    if (!confirm('Delete this routine?')) return 'keep';
+    state.routines = state.routines.filter(r => r.id !== v); closeModal();
+  },
+  // set types: normal → warm-up → drop → failure
+  'set-kind': (_, el) => {
+    const s = state.active.exercises[+el.dataset.i].sets[+el.dataset.j];
+    const order = ['normal', 'warmup', 'drop', 'failure'];
+    const cur = s.warmup ? 'warmup' : s.kind || 'normal';
+    const next = order[(order.indexOf(cur) + 1) % order.length];
+    s.warmup = next === 'warmup';
+    if (next === 'drop' || next === 'failure') s.kind = next; else delete s.kind;
+    toast({ normal: 'Working set', warmup: 'Warm-up set', drop: 'Drop set', failure: 'Set to failure' }[next]);
+  },
+  'ex-menu': (_, el) => { exMenu(+el.dataset.i); return 'keep'; },
+  'ss-link': (_, el) => {
+    const list = state.active.exercises, i = +el.dataset.i, a = list[i], b = list[i + 1];
+    if (a.superset && b.superset === a.superset) b.superset = null;
+    else {
+      const used = new Set(list.map(x => x.superset).filter(Boolean));
+      const g = a.superset || b.superset || 'ABCDEFGHIJ'.split('').find(c => !used.has(c));
+      a.superset = b.superset = g;
+    }
+    cleanSupersets(list); closeModal();
+  },
+  'ss-unlink': (_, el) => { state.active.exercises[+el.dataset.i].superset = null; cleanSupersets(state.active.exercises); closeModal(); },
+  'ex-note': (_, el) => {
+    const e = state.active.exercises[+el.dataset.i];
+    const n = prompt('Note for this exercise (seat height, grip, how it felt…)', e.notes || '');
+    if (n !== null) e.notes = n.slice(0, 300);
+    closeModal();
+  },
+  'ex-rest': (_, el) => {
+    const i = +el.dataset.i, e = state.active.exercises[i];
+    modal(`<h2>Rest timer</h2><p class="muted sm">${esc(EX[e.exId].name)}</p>
+      <div class="chips">${[0, 30, 45, 60, 90, 120, 150, 180, 240, 300].map(v => `<button class="chip ${e.rest === v ? 'on' : ''}" data-act="ex-rest-set" data-i="${i}" data-val="${v}">${v ? fmtDur(v * 1000) : 'Off'}</button>`).join('')}</div>`);
+    return 'keep';
+  },
+  'ex-rest-set': (v, el) => { state.active.exercises[+el.dataset.i].rest = +v; closeModal(); },
+  'ex-move': (v, el) => {
+    const list = state.active.exercises, i = +el.dataset.i, j = i + +v;
+    [list[i], list[j]] = [list[j], list[i]];
+    closeModal();
+  },
+  'share-workout': v => { shareWorkout(v); return 'keep'; },
+  // body
+  'body-entry': () => { bodyEntryModal(); return 'keep'; },
+  'body-save': () => {
+    const w = parseFloat($('#be-w').value);
+    if (!(w > 0)) { toast('Enter your weight'); return 'keep'; }
+    const fat = parseFloat($('#be-f').value), waist = parseFloat($('#be-waist').value);
+    const entry = { t: Date.now(), weight: G.fromDisplay(w, unit()) };
+    if (fat > 0) entry.fat = fat;
+    if (waist > 0) entry.waist = fromLen(waist);
+    state.body.push(entry);
+    state.profile.bodyweight = entry.weight;
+    closeModal(); toast('Logged');
+  },
+  'body-del': v => { state.body = state.body.filter(e => e.t !== +v); bodyEntryModal(); },
+  // tools
+  'tool-1rm': () => { oneRMModal(); return 'keep'; },
+  'tool-plates': () => { plateTool(); return 'keep'; },
+  'tool-interval': () => { intervalModal(); return 'keep'; },
+  'iv-start': () => { runInterval(); return 'keep'; },
+  'iv-stop': () => { clearInterval(interval?.timer); interval = null; closeModal(); return 'keep'; },
+  // custom exercises
+  'custom-ex': (_, el) => { customExModal(el.dataset.ctx); return 'keep'; },
+  'cx-toggle': (_, el) => { el.classList.toggle('on'); return 'keep'; },
+  'cx-radio': (_, el) => { el.parentElement.querySelectorAll('.chip').forEach(c => c.classList.toggle('on', c === el)); return 'keep'; },
+  'cx-save': (_, el) => {
+    const name = $('#cx-name').value.trim();
+    const on = id => [...document.querySelectorAll(`#${id} .chip.on`)].map(c => c.dataset.val);
+    const primary = on('cx-prim');
+    if (!name || !primary.length) { toast('Add a name and at least one primary muscle'); return 'keep'; }
+    const flags = on('cx-flags');
+    const ex = {
+      id: 'c_' + uid(), name, primary, secondary: on('cx-sec').filter(m => !primary.includes(m)), equip: on('cx-eq'),
+      type: on('cx-type')[0] || 'compound', ratio: 0, custom: true,
+      ...Object.fromEntries(flags.map(f => [f, true])),
+    };
+    state.custom.push(ex);
+    G.registerCustom([ex]);
+    const ctx = el.dataset.ctx;
+    if (ctx && (ctx === 'plan' ? state.plan : state.active)) target(ctx).push(G.buildExercise(state, ex.id));
+    closeModal(); toast(`${name} created`);
+  },
+  'delete-custom': v => {
+    const inUse = state.workouts.some(w => w.exercises.some(e => e.exId === v));
+    if (!confirm(inUse ? 'This exercise is in your history. Hide it from suggestions instead of deleting?' : 'Delete this custom exercise?')) return 'keep';
+    if (inUse) state.profile.excluded.push(v);
+    else {
+      state.custom = state.custom.filter(e => e.id !== v);
+      const i = EXERCISES.findIndex(e => e.id === v);
+      if (i >= 0) EXERCISES.splice(i, 1);
+      delete EX[v];
+      state.plan = null;
+    }
+    closeModal();
+  },
 };
+
+/** Drop superset groups that are left with a single exercise. */
+function cleanSupersets(list) {
+  const counts = {};
+  list.forEach(e => e.superset && (counts[e.superset] = (counts[e.superset] || 0) + 1));
+  list.forEach(e => { if (e.superset && counts[e.superset] < 2) e.superset = null; });
+}
 
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-act]');
@@ -794,6 +1274,7 @@ document.addEventListener('input', e => {
   const p = state.profile;
   if (f === 'bodyweight') { const v = parseFloat(el.value); if (v > 0) { p.bodyweight = G.fromDisplay(v, p.unit); state.plan = null; } }
   else if (f === 'name') p.name = el.value.slice(0, 40);
+  else if (f === 'wnote') state.active.notes = el.value.slice(0, 2000);
   else if (f === 'w' || f === 'r') {
     const ex = state.active.exercises[+el.dataset.i], j = +el.dataset.j, s = ex.sets[j];
     const v = parseFloat(el.value);
@@ -827,8 +1308,12 @@ document.addEventListener('change', e => {
       if (!confirm(`Import ${d.workouts.length} workouts? This replaces current data.`)) return;
       state.workouts = d.workouts;
       state.profile = { ...DEFAULT.profile, ...d.profile, onboarded: true };
+      state.routines = d.routines || [];
+      state.custom = d.custom || [];
+      state.body = d.body || [];
+      G.registerCustom(state.custom);
       state.plan = null; save(); render(); toast('Backup restored');
-    }).catch(() => toast("That file isn't a Forge backup"));
+    }).catch(() => toast("That file isn't a WeZza backup"));
   }
 });
 

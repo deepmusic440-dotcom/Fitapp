@@ -106,7 +106,7 @@ export function prescribe(state, exId) {
   let weight, reps = s.lo, note = '';
 
   if (hist.length) {
-    const last = hist[0].sets;
+    const last = hist[0].sets.filter(x => x.kind !== 'drop').length ? hist[0].sets.filter(x => x.kind !== 'drop') : hist[0].sets;
     const topW = Math.max(...last.map(x => x.weight || 0));
     const atTop = last.filter(x => (x.weight || 0) >= topW);
     const allHit = atTop.every(x => x.reps >= s.hi);
@@ -131,6 +131,9 @@ export function prescribe(state, exId) {
       reps = Math.min(s.hi, best + 1);
       note = `Aim for ${reps} reps`;
     }
+  } else if (!ex.bw && !ex.ratio) {
+    weight = 0;
+    note = 'Enter your starting weight';
   } else if (ex.bw) {
     weight = 0;
     reps = ex.timed ? s.lo : Math.round((s.lo + s.hi) / 2 * LEVEL[profile.level]);
@@ -368,3 +371,68 @@ export function plates(totalKg, unit) {
   for (const p of avail) while (side >= p - 1e-6) { out.push(p); side -= p; }
   return { bar, plates: out, remainder: Math.round(side * 100) / 100 };
 }
+
+// ---------- custom exercises ----------
+export function registerCustom(list) {
+  for (const e of list) {
+    if (EX[e.id]) Object.assign(EX[e.id], e);
+    else { EXERCISES.push(e); EX[e.id] = e; }
+  }
+}
+
+// ---------- achievements ----------
+export function longestStreak(state) {
+  const weekOf = t => { const d = new Date(t); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.getTime(); };
+  const weeks = [...new Set(state.workouts.map(w => weekOf(w.start)))].sort((a, b) => a - b);
+  let best = 0, run = 0, prev = null;
+  for (const wk of weeks) {
+    run = prev !== null && Math.round((wk - prev) / (7 * 24 * HOUR)) === 1 ? run + 1 : 1;
+    best = Math.max(best, run); prev = wk;
+  }
+  return best;
+}
+
+const ratioLift = (state, id, ratio) => {
+  const bw = state.profile.bodyweight;
+  return exerciseHistory(state, id).some(h => h.sets.some(s => s.weight >= bw * ratio && s.reps >= 1));
+};
+
+export const BADGES = [
+  { id: 'first', icon: '🎯', name: 'First Rep', desc: 'Finish your first workout', goal: 1, get: c => c.n },
+  { id: 'w10', icon: '💪', name: 'Committed', desc: 'Finish 10 workouts', goal: 10, get: c => c.n },
+  { id: 'w50', icon: '🏋️', name: 'Dedicated', desc: 'Finish 50 workouts', goal: 50, get: c => c.n },
+  { id: 'w100', icon: '💯', name: 'Centurion', desc: 'Finish 100 workouts', goal: 100, get: c => c.n },
+  { id: 'streak4', icon: '🔥', name: 'On a Roll', desc: 'Train 4 weeks in a row', goal: 4, get: c => c.streak },
+  { id: 'streak12', icon: '☄️', name: 'Unstoppable', desc: 'Train 12 weeks in a row', goal: 12, get: c => c.streak },
+  { id: 'vol10k', icon: '🧱', name: '10 Tonnes', desc: 'Lift 10,000 kg total', goal: 1e4, get: c => c.vol },
+  { id: 'vol100k', icon: '🏗️', name: '100 Tonnes', desc: 'Lift 100,000 kg total', goal: 1e5, get: c => c.vol },
+  { id: 'vol1m', icon: '🌋', name: 'Million Club', desc: 'Lift 1,000,000 kg total', goal: 1e6, get: c => c.vol },
+  { id: 'pr1', icon: '🏆', name: 'Record Breaker', desc: 'Set your first PR', goal: 1, get: c => c.prs },
+  { id: 'pr25', icon: '👑', name: 'PR Machine', desc: 'Set 25 PRs', goal: 25, get: c => c.prs },
+  { id: 'explorer', icon: '🧭', name: 'Explorer', desc: 'Try 25 different exercises', goal: 25, get: c => c.variety },
+  { id: 'early', icon: '🌅', name: 'Early Bird', desc: 'Start a workout before 7am', goal: 1, get: c => c.early },
+  { id: 'night', icon: '🌙', name: 'Night Owl', desc: 'Start a workout after 9pm', goal: 1, get: c => c.night },
+  { id: 'bwbench', icon: '🛡️', name: 'Bodyweight Bench', desc: 'Bench press your bodyweight', goal: 1, get: c => c.bwbench },
+  { id: 'squat15', icon: '🦵', name: 'Big Squat', desc: 'Squat 1.5× bodyweight', goal: 1, get: c => c.squat15 },
+  { id: 'dl2', icon: '⚡', name: 'Double Pull', desc: 'Deadlift 2× bodyweight', goal: 1, get: c => c.dl2 },
+];
+
+export function achievements(state) {
+  const ws = state.workouts;
+  const c = {
+    n: ws.length,
+    streak: longestStreak(state),
+    vol: ws.reduce((a, w) => a + workoutVolume(w), 0),
+    prs: ws.reduce((a, w) => a + (w.prs?.length || 0), 0),
+    variety: new Set(ws.flatMap(w => w.exercises.map(e => e.exId))).size,
+    early: +ws.some(w => new Date(w.start).getHours() < 7),
+    night: +ws.some(w => new Date(w.start).getHours() >= 21),
+    bwbench: +ratioLift(state, 'bench', 1),
+    squat15: +ratioLift(state, 'squat', 1.5),
+    dl2: +ratioLift(state, 'deadlift', 2),
+  };
+  return BADGES.map(b => { const v = b.get(c); return { ...b, value: v, earned: v >= b.goal, pct: Math.min(1, v / b.goal) }; });
+}
+
+/** Reps achievable at a given fraction of 1RM (inverse Epley). */
+export const repsAtPct = p => p >= 1 ? 1 : Math.max(1, Math.round(30 * (1 / p - 1)));

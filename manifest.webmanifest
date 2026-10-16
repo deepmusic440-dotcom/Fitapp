@@ -1,6 +1,6 @@
 {
-  "name": "Forge — Smart Workouts",
-  "short_name": "Forge",
+  "name": "WeZza Workout App",
+  "short_name": "WeZza",
   "description": "Workouts that adapt to your recovery and progress with you.",
   "start_url": "./",
   "scope": "./",

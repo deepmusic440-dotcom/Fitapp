@@ -1,6 +1,6 @@
 // Offline-first cache for the app shell.
-const CACHE = 'forge-v1';
-const ASSETS = ['./', 'index.html', 'styles.css', 'js/app.js', 'js/engine.js', 'js/data.js', 'js/body.js',
+const CACHE = 'wezza-v2';
+const ASSETS = ['./', 'index.html', 'styles.css', 'js/app.js', 'js/engine.js', 'js/data.js', 'js/body.js', 'js/cues.js',
   'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', e => {
