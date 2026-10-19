@@ -685,6 +685,57 @@ function modal(html, cls = '') {
 }
 function closeModal() { document.querySelectorAll('.modal-wrap').forEach(m => m.remove()); }
 
+/**
+ * In-app stand-in for confirm() and prompt(), which embedded and installed web apps can block.
+ * Resolves true/false, or with `input` set, the entered text (null when cancelled).
+ */
+function ask(msg, { input = null, ok = 'OK', danger = false } = {}) {
+  return new Promise(resolve => {
+    const m = modal(`<p class="askmsg">${esc(msg)}</p>
+      ${input !== null ? `<input type="text" class="search" id="ask-in" maxlength="300" value="${esc(input)}">` : ''}
+      <div class="row"><button class="btn ghost grow" data-ask="0">Cancel</button>
+      <button class="btn ${danger ? 'danger-fill' : 'primary'} grow" data-ask="1">${esc(ok)}</button></div>`, 'ask');
+    const answer = yes => input !== null ? (yes ? $('#ask-in', m).value.trim() || null : null) : yes;
+    const done = yes => { closeModal(); resolve(answer(yes)); };
+    m.addEventListener('click', e => {
+      const b = e.target.closest('[data-ask]');
+      if (b) done(b.dataset.ask === '1');
+      else if (e.target === m || e.target.closest('[data-act=close-modal]')) resolve(answer(false));
+    });
+    const field = $('#ask-in', m);
+    if (field) { field.focus(); field.select(); field.addEventListener('keydown', e => { if (e.key === 'Enter') done(true); }); }
+  });
+}
+
+/** Ask, and on yes run fn, then save and redraw. For use as an action's return value. */
+function confirmThen(msg, opts, fn) {
+  ask(msg, opts).then(yes => { if (yes) { fn(); save(); render(); } });
+  return 'keep';
+}
+
+/**
+ * Save a file. Inside an embedded viewer downloads are blocked, so show the contents
+ * (text to copy, or an image to long-press) instead.
+ */
+function saveFile(name, blob, text) {
+  if (window.top === window.self) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = name;
+    a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    return;
+  }
+  const url = URL.createObjectURL(blob);
+  const m = modal(`<h2>${esc(name)}</h2>
+    ${text != null ? `<p class="muted sm">Downloads are blocked in this viewer. Copy the text below and save it as <b>${esc(name)}</b>, or open WeZza in its own tab to download it.</p>
+      <textarea class="filetext" id="file-text" readonly>${esc(text)}</textarea>
+      <button class="btn primary big" id="file-copy">Copy to clipboard</button>`
+      : `<p class="muted sm">Downloads are blocked in this viewer. Press and hold the image to save or share it.</p><img class="fileimg" src="${url}" alt="${esc(name)}">`}`, 'tall');
+  $('#file-copy', m)?.addEventListener('click', () => {
+    const ta = $('#file-text', m);
+    navigator.clipboard.writeText(text).then(() => toast('Copied')).catch(() => { ta.focus(); ta.select(); toast('Selected. Copy it from the menu'); });
+  });
+}
+
 function pickerModal(title, list, act, ctx, i) {
   const m = modal(`<h2>${title}</h2>
     <input type="search" class="search" placeholder="Search exercises" data-field="search">
@@ -1022,13 +1073,14 @@ function saveRoutine(src) {
   const exs = src === 'plan' ? state.plan.exercises : state.workouts.find(w => w.id === src)?.exercises;
   if (!exs?.length) return;
   const suggested = src === 'plan' ? (state.plan.title || workoutTitle(exs)) : state.workouts.find(w => w.id === src).title;
-  const name = prompt('Routine name', suggested);
-  if (!name) return;
-  state.routines.push({
-    id: uid(), name: name.slice(0, 40), created: Date.now(),
-    exercises: exs.map(e => ({ exId: e.exId, sets: Math.max(1, e.sets.filter(s => !s.warmup).length), superset: e.superset || null, ...(e.range ? { range: e.range } : {}) })),
+  ask('Name this routine', { input: suggested, ok: 'Save routine' }).then(name => {
+    if (!name) return;
+    state.routines.push({
+      id: uid(), name: name.slice(0, 40), created: Date.now(),
+      exercises: exs.map(e => ({ exId: e.exId, sets: Math.max(1, e.sets.filter(s => !s.warmup).length), superset: e.superset || null, ...(e.range ? { range: e.range } : {}) })),
+    });
+    save(); render(); toast('Routine saved');
   });
-  toast('Routine saved');
 }
 
 async function shareWorkout(id) {
@@ -1073,10 +1125,9 @@ async function shareWorkout(id) {
   try {
     if (navigator.canShare?.({ files: [file] })) { await navigator.share({ files: [file], title: w.title }); return; }
   } catch (err) { if (err.name === 'AbortError') return; }
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(file); a.download = file.name; a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-  toast('Image saved');
+  saveFile(file.name, file);
+  if (window.top === window.self) toast('Image saved');
+
 }
 
 // ---------- actions ----------
@@ -1113,7 +1164,7 @@ function finishWorkout() {
   const a = state.active;
   const done = a.exercises.some(e => e.sets.some(s => s.done));
   if (!done && a.editing) { toast('Tick at least one set to save'); return; }
-  if (!done) { if (confirm('No sets completed. Discard this workout?')) discard(); return; }
+  if (!done) { ask('No sets completed. Discard this workout?', { ok: 'Discard', danger: true }).then(y => y && discard()); return; }
   if (!a.editing) a.end = Date.now();
   const exercises = a.exercises.filter(e => e.sets.some(s => s.done))
     .map(({ exId, sets, superset, notes, range }) => ({ exId, sets: sets.filter(s => s.done), superset: superset || null, notes: notes || '', ...(range ? { range } : {}) }));
@@ -1251,10 +1302,10 @@ const actions = {
   },
   remove: (_, el) => {
     const list = target(el.dataset.ctx), i = +el.dataset.i;
-    if (el.dataset.ctx === 'active' && list[i].sets.some(s => s.done) && !confirm('Remove this exercise and its logged sets?')) return 'keep';
-    list.splice(i, 1);
-    cleanSupersets(list);
-    closeModal();
+    const drop = () => { list.splice(i, 1); cleanSupersets(list); closeModal(); };
+    if (el.dataset.ctx === 'active' && list[i].sets.some(s => s.done))
+      return confirmThen('Remove this exercise and its logged sets?', { ok: 'Remove', danger: true }, drop);
+    drop();
   },
   'add-ex': (_, el) => {
     const ctx = el.dataset.ctx;
@@ -1305,7 +1356,7 @@ const actions = {
   'rest-skip': () => { state.active.restEnd = 0; $('#restbar')?.classList.remove('show'); return 'keep'; },
   plates: (_, el) => { platesModal(+el.dataset.i); return 'keep'; },
   'finish-workout': () => { finishWorkout(); return 'keep'; },
-  'cancel-workout': () => { if (confirm('Discard this workout? Logged sets will be lost.')) discard(); return 'keep'; },
+  'cancel-workout': () => { ask('Discard this workout? Logged sets will be lost.', { ok: 'Discard', danger: true }).then(y => y && discard()); return 'keep'; },
   'cancel-edit': () => { state.active = null; },
   'edit-workout': v => { editWorkout(v); },
   'log-past': () => { editWorkout(null); },
@@ -1318,10 +1369,8 @@ const actions = {
     state.plan = null; state.ui.tab = 'train'; closeModal(); window.scrollTo(0, 0);
     toast(`${PROGRAM[v].name} started`);
   },
-  'program-end': () => {
-    if (!confirm('End this program? Your logged workouts stay in your history.')) return 'keep';
-    state.program = null; state.plan = null; closeModal();
-  },
+  'program-end': () => confirmThen('End this program? Your logged workouts stay in your history.', { ok: 'End program', danger: true },
+    () => { state.program = null; state.plan = null; }),
   'program-load': () => { planFromProgram(); },
   'program-skip': () => {
     const p = PROGRAM[state.program.id];
@@ -1330,10 +1379,8 @@ const actions = {
   },
   'close-modal': () => { closeModal(); return 'keep'; },
   'open-workout': v => { modal(workoutDetail(v)); return 'keep'; },
-  'delete-workout': v => {
-    if (!confirm('Delete this workout?')) return 'keep';
-    state.workouts = state.workouts.filter(w => w.id !== v); closeModal();
-  },
+  'delete-workout': v => confirmThen('Delete this workout?', { ok: 'Delete', danger: true },
+    () => { state.workouts = state.workouts.filter(w => w.id !== v); }),
   'repeat-workout': v => {
     const w = state.workouts.find(x => x.id === v);
     state.plan = { exercises: w.exercises.filter(e => EX[e.exId]).map(e => ({ ...G.buildExercise(state, e.exId, EX[e.exId].cardio ? null : Math.max(2, G.workingSets(e).length), e.range), superset: e.superset || null })), targets: [], focus: 'repeat', title: w.title };
@@ -1355,23 +1402,17 @@ const actions = {
   'manage-ex': () => { manageExModal(); return 'keep'; },
   export: () => {
     const { profile, workouts, routines, custom, body, program } = state;
-    const blob = new Blob([JSON.stringify({ app: 'wezza', version: 3, exported: new Date().toISOString(), profile, workouts, routines, custom, body, program }, null, 2)], { type: 'application/json' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob); a.download = `wezza-backup-${new Date().toISOString().slice(0, 10)}.json`;
-    a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    const text = JSON.stringify({ app: 'wezza', version: 3, exported: new Date().toISOString(), profile, workouts, routines, custom, body, program }, null, 2);
+    saveFile(`wezza-backup-${new Date().toISOString().slice(0, 10)}.json`, new Blob([text], { type: 'application/json' }), text);
     return 'keep';
   },
   'export-csv': () => {
-    const blob = new Blob([exportCSV(state)], { type: 'text/csv' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob); a.download = `wezza-workouts-${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    const text = exportCSV(state);
+    saveFile(`wezza-workouts-${new Date().toISOString().slice(0, 10)}.csv`, new Blob([text], { type: 'text/csv' }), text);
     return 'keep';
   },
-  reset: () => {
-    if (!confirm('Erase all workouts and settings on this device?')) return 'keep';
-    state = structuredClone(DEFAULT);
-  },
+  reset: () => confirmThen('Erase all workouts and settings on this device?', { ok: 'Erase everything', danger: true },
+    () => { state = structuredClone(DEFAULT); }),
   'p-goalw': v => { state.profile.weeklyGoal = +v; },
   'cal-move': v => {
     const now = new Date();
@@ -1379,7 +1420,7 @@ const actions = {
     state.ui.calMonth = new Date(m.getFullYear(), m.getMonth() + +v, 1).getTime();
   },
   // routines
-  'save-routine': v => { saveRoutine(v); closeModal(); },
+  'save-routine': v => { saveRoutine(v); return 'keep'; },
   'open-routine': v => { routineModal(v); return 'keep'; },
   'load-routine': v => {
     planFromRoutine(state.routines.find(r => r.id === v));
@@ -1387,14 +1428,11 @@ const actions = {
   },
   'rename-routine': v => {
     const r = state.routines.find(x => x.id === v);
-    const name = prompt('Rename routine', r.name);
-    if (name) r.name = name.slice(0, 40);
-    closeModal();
+    ask('Rename routine', { input: r.name, ok: 'Rename' }).then(name => { if (name) { r.name = name.slice(0, 40); save(); render(); } });
+    return 'keep';
   },
-  'delete-routine': v => {
-    if (!confirm('Delete this routine?')) return 'keep';
-    state.routines = state.routines.filter(r => r.id !== v); closeModal();
-  },
+  'delete-routine': v => confirmThen('Delete this routine?', { ok: 'Delete', danger: true },
+    () => { state.routines = state.routines.filter(r => r.id !== v); }),
   // set types: normal → warm-up → drop → failure
   'set-kind': (_, el) => {
     const s = state.active.exercises[+el.dataset.i].sets[+el.dataset.j];
@@ -1419,9 +1457,9 @@ const actions = {
   'ss-unlink': (_, el) => { state.active.exercises[+el.dataset.i].superset = null; cleanSupersets(state.active.exercises); closeModal(); },
   'ex-note': (_, el) => {
     const e = state.active.exercises[+el.dataset.i];
-    const n = prompt('Note for this exercise (seat height, grip, how it felt…)', e.notes || '');
-    if (n !== null) e.notes = n.slice(0, 300);
-    closeModal();
+    ask('Note for this exercise (seat height, grip, how it felt…)', { input: e.notes || '', ok: 'Save note' })
+      .then(n => { e.notes = (n || '').slice(0, 300); save(); render(); });
+    return 'keep';
   },
   'ex-rest': (_, el) => {
     const i = +el.dataset.i, e = state.active.exercises[i];
@@ -1479,16 +1517,17 @@ const actions = {
   },
   'delete-custom': v => {
     const inUse = state.workouts.some(w => w.exercises.some(e => e.exId === v));
-    if (!confirm(inUse ? 'This exercise is in your history. Hide it from suggestions instead of deleting?' : 'Delete this custom exercise?')) return 'keep';
-    if (inUse) state.profile.excluded.push(v);
-    else {
-      state.custom = state.custom.filter(e => e.id !== v);
-      const i = EXERCISES.findIndex(e => e.id === v);
-      if (i >= 0) EXERCISES.splice(i, 1);
-      delete EX[v];
-      state.plan = null;
-    }
-    closeModal();
+    return confirmThen(inUse ? 'This exercise is in your history. Hide it from suggestions instead of deleting?' : 'Delete this custom exercise?',
+      { ok: inUse ? 'Hide it' : 'Delete', danger: !inUse }, () => {
+        if (inUse) state.profile.excluded.push(v);
+        else {
+          state.custom = state.custom.filter(e => e.id !== v);
+          const i = EXERCISES.findIndex(e => e.id === v);
+          if (i >= 0) EXERCISES.splice(i, 1);
+          delete EX[v];
+          state.plan = null;
+        }
+      });
   },
 };
 
@@ -1557,16 +1596,19 @@ document.addEventListener('change', e => {
     file.text().then(t => {
       const d = JSON.parse(t);
       if (!Array.isArray(d.workouts)) throw new Error('bad file');
-      if (!confirm(`Import ${d.workouts.length} workouts? This replaces current data.`)) return;
-      state.workouts = d.workouts;
-      state.profile = { ...DEFAULT.profile, ...d.profile, onboarded: true };
-      state.routines = d.routines || [];
-      state.custom = d.custom || [];
-      state.body = d.body || [];
-      state.program = d.program || null;
-      G.registerCustom(state.custom);
-      state.plan = null; save(); render(); toast('Backup restored');
+      return ask(`Restore ${d.workouts.length} workouts? This replaces everything on this device.`, { ok: 'Restore', danger: true }).then(yes => {
+        if (!yes) return;
+        state.workouts = d.workouts;
+        state.profile = { ...DEFAULT.profile, ...d.profile, onboarded: true };
+        state.routines = d.routines || [];
+        state.custom = d.custom || [];
+        state.body = d.body || [];
+        state.program = d.program || null;
+        G.registerCustom(state.custom);
+        state.plan = null; save(); render(); toast('Backup restored');
+      });
     }).catch(() => toast("That file isn't a WeZza backup"));
+    el.value = '';
   }
   else if (f === 'import-csv') {
     const file = el.files[0]; if (!file) return;
@@ -1578,14 +1620,16 @@ document.addEventListener('change', e => {
       if (!fresh.length) { toast(workouts.length ? 'Those workouts are already in your history' : 'No workouts found in that file'); return; }
       const used = new Set(fresh.flatMap(w => w.exercises.map(e => e.exId)));
       const newEx = created.filter(e => used.has(e.id));
-      if (!confirm(`Import ${fresh.length} workout${fresh.length === 1 ? '' : 's'} from ${source}?` +
-        (newEx.length ? `\n\n${newEx.length} exercise${newEx.length === 1 ? '' : 's'} WeZza doesn't know will be added as custom exercises.` : ''))) return;
-      state.custom.push(...newEx);
-      G.registerCustom(newEx);
-      state.workouts.push(...fresh);
-      for (const w of [...fresh].sort((a, b) => a.start - b.start)) w.prs = G.workoutPRs(state, w);
-      state.plan = null; save(); render();
-      toast(`Imported ${fresh.length} workout${fresh.length === 1 ? '' : 's'}`);
+      return ask(`Import ${fresh.length} workout${fresh.length === 1 ? '' : 's'} from ${source}?` +
+        (newEx.length ? `\n\n${newEx.length} exercise${newEx.length === 1 ? '' : 's'} WeZza doesn't know will be added as custom exercises.` : ''), { ok: 'Import' }).then(yes => {
+        if (!yes) return;
+        state.custom.push(...newEx);
+        G.registerCustom(newEx);
+        state.workouts.push(...fresh);
+        for (const w of [...fresh].sort((a, b) => a.start - b.start)) w.prs = G.workoutPRs(state, w);
+        state.plan = null; save(); render();
+        toast(`Imported ${fresh.length} workout${fresh.length === 1 ? '' : 's'}`);
+      });
     }).catch(() => toast("Couldn't read that CSV. Export it from Strong or Hevy and try again"));
   }
 
