@@ -912,19 +912,50 @@ async function saveFile(name, blob, text) {
   });
 }
 
+// Shorthand people type, spelled the way the library names things.
+const SEARCH_ALIASES = {
+  db: 'dumbbell', bb: 'barbell', kb: 'kettlebell', ohp: 'overhead press', rdl: 'romanian deadlift', sldl: 'stiff-leg',
+  tri: 'triceps', bi: 'biceps', delt: 'shoulder', delts: 'shoulder', pec: 'chest', pecs: 'chest', ham: 'hamstring', hams: 'hamstring',
+  smith: 'smith machine', treadmill: 'treadmill',
+};
+/** Everything an exercise can be found by: name, muscles, equipment, with and without hyphens. */
+function searchText(e) {
+  const t = [e.name, ...musclesOf(e), ...e.equip.map(q => EQUIPMENT[q]), e.equip.length ? '' : 'bodyweight',
+    e.cardio ? 'cardio' : '', e.custom ? 'custom' : ''].join(' ').toLowerCase();
+  return t + ' ' + t.replace(/-/g, '');
+}
+/** Every word of the query appears somewhere in the text, in any order ("triceps extension cable"). */
+function matchesQuery(text, q) {
+  return q.toLowerCase().split(/[^a-z0-9'-]+/).filter(Boolean).every(w =>
+    (SEARCH_ALIASES[w] || w).split(' ').every(x => text.includes(x.length > 4 && x.endsWith('s') ? x.slice(0, -1) : x)));
+}
+
 function pickerModal(title, list, act, ctx, i) {
+  const adding = act === 'do-add';
+  const note = e => !G.available(state, e) ? (state.profile.excluded.includes(e.id) ? ' · excluded' : ' · not in your equipment') : '';
   const m = modal(`<h2>${title}</h2>
-    <input type="search" class="search" placeholder="Search exercises" data-field="search">
-    ${act === 'do-add' ? `<button class="btn ghost sm" data-act="custom-ex" data-ctx="${ctx}">${icon('plus')} Create custom exercise</button>` : ''}
+    <input type="search" class="search" placeholder="Search ${list.length} exercises" data-field="search">
+    ${adding ? `<button class="btn ghost sm" data-act="custom-ex" data-ctx="${ctx}">${icon('plus')} Create custom exercise</button>` : ''}
     <div class="chips scroll" id="mfilter">${chip('mfilter', '', 'All', true)}${Object.entries(MUSCLES).map(([k, v]) => chip('mfilter', k, v.name, false)).join('')}</div>
     <div class="picklist">${list.map(e => `
-      <button class="pick" data-act="${act}" data-val="${e.id}" data-ctx="${ctx}" data-i="${i ?? ''}" data-name="${esc(e.name.toLowerCase())}" data-m="${[...e.primary, ...e.secondary].join(' ')}">
-        <b>${esc(e.name)}</b><span class="muted sm">${musclesOf(e).slice(0, 3).join(', ')} · ${e.equip.map(q => EQUIPMENT[q]).join(', ') || 'Bodyweight'}</span>
-      </button>`).join('')}</div>`, 'tall');
+      <button class="pick" data-act="${act}" data-val="${e.id}" data-ctx="${ctx}" data-i="${i ?? ''}" data-s="${esc(searchText(e))}" data-m="${[...e.primary, ...e.secondary].join(' ')}">
+        <b>${esc(e.name)}</b><span class="muted sm">${musclesOf(e).slice(0, 3).join(', ')} · ${e.equip.map(q => EQUIPMENT[q]).join(', ') || (e.cardio ? 'Cardio' : 'Bodyweight')}${note(e)}</span>
+      </button>`).join('')}
+      <div class="nomatch" hidden><p class="muted">No exercise matches “<span class="q"></span>”.</p>
+        ${adding ? `<button class="btn primary" data-act="custom-ex" data-ctx="${ctx}">${icon('plus')}<span>Create “<span class="q"></span>”</span></button>` : ''}</div></div>`, 'tall');
   const filter = () => {
-    const q = $('[data-field=search]', m).value.toLowerCase();
+    const q = $('[data-field=search]', m).value.trim();
     const mf = $('#mfilter .chip.on', m)?.dataset.val || '';
-    m.querySelectorAll('.pick').forEach(b => b.hidden = !(b.dataset.name.includes(q) && (!mf || b.dataset.m.split(' ').includes(mf))));
+    let shown = 0;
+    m.querySelectorAll('.pick').forEach(b => {
+      b.hidden = !(matchesQuery(b.dataset.s, q) && (!mf || b.dataset.m.split(' ').includes(mf)));
+      if (!b.hidden) shown++;
+    });
+    const none = $('.nomatch', m);
+    none.hidden = shown > 0 || !q;
+    none.querySelectorAll('.q').forEach(s => { s.textContent = q; });
+    const make = $('.nomatch [data-act=custom-ex]', m);
+    if (make) make.dataset.prefill = q;
   };
   m.addEventListener('input', filter);
   m.addEventListener('click', e => {
@@ -975,7 +1006,8 @@ function exInfo(id) {
     <div class="row wrap">
       <button class="btn ghost" data-act="fav" data-val="${id}">${icon('star')} ${fav ? 'Unfavorite' : 'Favorite'}</button>
       <button class="btn ghost danger" data-act="exclude" data-val="${id}">Never suggest</button>
-      ${d.custom ? `<button class="btn ghost danger" data-act="delete-custom" data-val="${id}">${icon('trash')} Delete exercise</button>` : ''}
+      ${d.custom ? `<button class="btn ghost" data-act="edit-custom" data-val="${id}">${icon('edit')} Edit</button>
+        <button class="btn ghost danger" data-act="delete-custom" data-val="${id}">${icon('trash')} Delete exercise</button>` : ''}
     </div>`);
 }
 
@@ -997,19 +1029,18 @@ function platesModal(i) {
 
 function manageExModal() {
   const p = state.profile;
-  const list = EXERCISES.filter(e => G.available({ profile: { ...p, excluded: [] } }, e));
-  modal(`<h2>Exercises</h2><p class="muted sm">Favorites get suggested more. Excluded never appear.</p>
+  modal(`<h2>Exercises</h2><p class="muted sm">${EXERCISES.length} exercises. Favorites get suggested more; excluded ones are never suggested. Tap a name for details${state.custom.length ? ', or to edit your custom ones' : ''}.</p>
     <input type="search" class="search" placeholder="Search" data-field="search">
-    <div class="picklist">${list.map(e => `<div class="pick static" data-name="${esc(e.name.toLowerCase())}">
-      <b>${esc(e.name)}</b>
+    <div class="picklist">${EXERCISES.map(e => `<div class="pick static" data-s="${esc(searchText(e))}">
+      <b data-act="ex-info" data-val="${e.id}" class="linkish">${esc(e.name)}${e.custom ? ' <span class="muted sm">· custom</span>' : ''}</b>
       <div class="row tight">
         <button class="chip ${p.favorites.includes(e.id) ? 'on' : ''}" data-act="fav" data-val="${e.id}" data-stay="1">★</button>
         <button class="chip ${p.excluded.includes(e.id) ? 'on danger' : ''}" data-act="exclude" data-val="${e.id}" data-stay="1">Exclude</button>
       </div></div>`).join('')}</div>`, 'tall');
   const m = $('.modal-wrap');
   m.addEventListener('input', () => {
-    const q = $('[data-field=search]', m).value.toLowerCase();
-    m.querySelectorAll('.pick').forEach(b => b.hidden = !b.dataset.name.includes(q));
+    const q = $('[data-field=search]', m).value.trim();
+    m.querySelectorAll('.pick').forEach(b => b.hidden = !matchesQuery(b.dataset.s, q));
   });
 }
 
@@ -1237,19 +1268,24 @@ function bodyEntryModal() {
       <button class="icbtn" data-act="body-del" data-val="${e.t}" aria-label="Delete">${icon('trash')}</button></div>`).join('')}` : ''}`);
 }
 
-function customExModal(ctx) {
-  modal(`<h2>Custom exercise</h2>
-    <label class="field">Name<input type="text" id="cx-name" maxlength="40" placeholder="e.g. Landmine Press"></label>
-    <h3>Primary muscles</h3>
-    <div class="chips" id="cx-prim">${Object.entries(MUSCLES).map(([k, v]) => `<button class="chip" data-act="cx-toggle" data-val="${k}">${v.name}</button>`).join('')}</div>
-    <h3>Secondary muscles <small>optional</small></h3>
-    <div class="chips" id="cx-sec">${Object.entries(MUSCLES).map(([k, v]) => `<button class="chip" data-act="cx-toggle" data-val="${k}">${v.name}</button>`).join('')}</div>
-    <h3>Equipment</h3>
-    <div class="chips" id="cx-eq">${Object.entries(EQUIPMENT).map(([k, v]) => `<button class="chip" data-act="cx-toggle" data-val="${k}">${v}</button>`).join('')}</div>
+const CX_FLAGS = [['bw', 'Bodyweight'], ['timed', 'Timed (seconds)'], ['perHand', 'Per hand'], ['bar', 'Barbell plates'], ['cardio', 'Cardio (distance & time)']];
+
+/** Create a custom exercise (optionally named from a search), or edit one when `id` is given. */
+function customExModal(ctx, id, name = '') {
+  const e = id ? EX[id] : null;
+  const on = (list, k) => list?.includes(k) ? ' on' : '';
+  const chips = (sel, entries, list) => `<div class="chips" id="${sel}">${entries.map(([k, v]) => `<button class="chip${on(list, k)}" data-act="cx-toggle" data-val="${k}">${v}</button>`).join('')}</div>`;
+  const muscles = Object.entries(MUSCLES).map(([k, v]) => [k, v.name]);
+  modal(`<h2>${e ? 'Edit exercise' : 'Custom exercise'}</h2>
+    <label class="field">Name<input type="text" id="cx-name" maxlength="40" placeholder="e.g. Landmine Press" value="${esc(e?.name ?? name)}"></label>
+    <h3>Primary muscles</h3>${chips('cx-prim', muscles, e?.primary)}
+    <h3>Secondary muscles <small>optional</small></h3>${chips('cx-sec', muscles, e?.secondary)}
+    <h3>Equipment <small>none = bodyweight</small></h3>${chips('cx-eq', Object.entries(EQUIPMENT), e?.equip)}
     <h3>Type</h3>
-    <div class="chips" id="cx-type"><button class="chip on" data-act="cx-radio" data-val="compound">Compound</button><button class="chip" data-act="cx-radio" data-val="isolation">Isolation</button></div>
-    <div class="chips" id="cx-flags"><button class="chip" data-act="cx-toggle" data-val="bw">Bodyweight</button><button class="chip" data-act="cx-toggle" data-val="timed">Timed (seconds)</button><button class="chip" data-act="cx-toggle" data-val="perHand">Per hand</button><button class="chip" data-act="cx-toggle" data-val="bar">Barbell plates</button></div>
-    <button class="btn primary big" data-act="cx-save" data-ctx="${ctx || ''}">Create exercise</button>`, 'tall');
+    <div class="chips" id="cx-type"><button class="chip${!e || e.type === 'compound' ? ' on' : ''}" data-act="cx-radio" data-val="compound">Compound</button><button class="chip${e?.type === 'isolation' ? ' on' : ''}" data-act="cx-radio" data-val="isolation">Isolation</button></div>
+    ${chips('cx-flags', CX_FLAGS, e ? CX_FLAGS.map(([k]) => k).filter(k => e[k]) : [])}
+    <button class="btn primary big" data-act="cx-save" data-ctx="${ctx || ''}" data-val="${id || ''}">${e ? 'Save changes' : 'Create exercise'}</button>`, 'tall');
+  if (!e) $('#cx-name')?.focus();
 }
 
 function exMenu(i) {
@@ -1520,8 +1556,10 @@ const actions = {
   'add-ex': (_, el) => {
     const ctx = el.dataset.ctx;
     const have = target(ctx).map(e => e.exId);
-    const list = EXERCISES.filter(e => G.available(state, e) && !have.includes(e.id));
+    // Every exercise is offered here; equipment and exclusions only steer what gets suggested.
+    const list = EXERCISES.filter(e => !have.includes(e.id));
     pickerModal('Add exercise', list, 'do-add', ctx);
+
     return 'keep';
   },
   'do-add': (v, el) => { target(el.dataset.ctx).push(G.buildExercise(state, v)); closeModal(); },
@@ -1747,7 +1785,8 @@ const actions = {
   'iv-start': () => { runInterval(); return 'keep'; },
   'iv-stop': () => { clearInterval(interval?.timer); interval = null; closeModal(); return 'keep'; },
   // custom exercises
-  'custom-ex': (_, el) => { customExModal(el.dataset.ctx); return 'keep'; },
+  'custom-ex': (_, el) => { customExModal(el.dataset.ctx, null, el.dataset.prefill || ''); return 'keep'; },
+  'edit-custom': v => { customExModal(null, v); return 'keep'; },
   'cx-toggle': (_, el) => { el.classList.toggle('on'); return 'keep'; },
   'cx-radio': (_, el) => { el.parentElement.querySelectorAll('.chip').forEach(c => c.classList.toggle('on', c === el)); return 'keep'; },
   'cx-save': (_, el) => {
@@ -1755,12 +1794,24 @@ const actions = {
     const on = id => [...document.querySelectorAll(`#${id} .chip.on`)].map(c => c.dataset.val);
     const primary = on('cx-prim');
     if (!name || !primary.length) { toast('Add a name and at least one primary muscle'); return 'keep'; }
+    const editing = el.dataset.val;
+    const taken = EXERCISES.find(e => e.name.toLowerCase() === name.toLowerCase() && e.id !== editing);
+    if (taken) { toast(`“${taken.name}” already exists. Search for it instead`); return 'keep'; }
     const flags = on('cx-flags');
     const ex = {
-      id: 'c_' + uid(), name, primary, secondary: on('cx-sec').filter(m => !primary.includes(m)), equip: on('cx-eq'),
+      id: editing || 'c_' + uid(), name, primary, secondary: on('cx-sec').filter(m => !primary.includes(m)), equip: on('cx-eq'),
       type: on('cx-type')[0] || 'compound', ratio: 0, custom: true,
       ...Object.fromEntries(flags.map(f => [f, true])),
     };
+    if (editing) {
+      // Replace the stored definition and the live one; clear flags that were switched off.
+      state.custom = state.custom.map(c => c.id === editing ? ex : c);
+      for (const [f] of CX_FLAGS) delete EX[editing][f];
+      G.registerCustom([ex]);
+      state.plan = null;
+      closeModal(); toast(`${name} updated`);
+      return;
+    }
     state.custom.push(ex);
     G.registerCustom([ex]);
     const ctx = el.dataset.ctx;
@@ -1806,7 +1857,7 @@ document.addEventListener('input', e => {
   if (!f) return;
   if (f === 'lastq') {
     const q = el.value.toLowerCase();
-    el.closest('.card').querySelectorAll('.lastrow').forEach(r => r.hidden = !r.dataset.name.includes(q));
+    el.closest('.card').querySelectorAll('.lastrow').forEach(r => r.hidden = !matchesQuery(r.dataset.name, q));
     return;
   }
   const p = state.profile;

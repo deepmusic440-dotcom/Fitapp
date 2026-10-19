@@ -40,8 +40,10 @@ A free, offline, installable workout app. WeZza builds each workout around how r
 - **Edit past workouts, or log one you forgot,** including its date, start time, duration and title.
 - **Notes** for the whole workout and for each exercise.
 - **Reordering.** Move exercises up or down, swap them, or add and remove them mid-workout.
-- **Custom exercises** with your own muscles, equipment and flags.
-- **How-to cues** for all ~90 built-in exercises.
+- **247 built-in exercises** covering barbell, dumbbell, cable, machine, Smith machine, EZ-bar, kettlebell, band, bodyweight and cardio variations. The Add Exercise list shows all of them, whatever equipment you've set; equipment only decides what gets suggested.
+- **Search in any word order** ("triceps extension cable", "db skull", "smith squat"), by name, muscle or equipment.
+- **Custom exercises** with your own muscles, equipment and flags. If a search finds nothing, one tap creates it with that name; custom exercises can be edited later.
+- **How-to cues** for the common exercises.
 - **Auto warm-ups** on heavy compound lifts.
 - **The screen stays awake** during a workout.
 
