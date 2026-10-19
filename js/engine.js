@@ -246,7 +246,7 @@ export function generate(state, { focus = 'auto', customMuscles = [], seed = Dat
   const chosen = [];
 
   const pick = (muscle, preferCompound) => {
-    const cands = EXERCISES.filter(e => e.primary.includes(muscle) && !e.cardio && available(state, e) && !chosen.includes(e.id));
+    const cands = EXERCISES.filter(e => e.primary.includes(muscle) && !e.cardio && !e.noGen && available(state, e) && !chosen.includes(e.id));
     if (!cands.length) return null;
     const score = e =>
       (preferCompound && e.type === 'compound' ? 4 : 0) +
