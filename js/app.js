@@ -4,6 +4,7 @@ import { bodyMap, heatColor } from './body.js';
 import { CUES } from './cues.js';
 import { PROGRAMS, PROGRAM } from './programs.js';
 import { importCSV, exportCSV } from './csv.js';
+import * as C from './coach.js';
 
 const KEY = 'wezza.v1';
 const LEGACY_KEYS = ['forge.v1'];
@@ -24,6 +25,8 @@ const DEFAULT = {
   active: null,
   plan: null,
   program: null, // { id, day, done, started }
+  myPrograms: [], // programs the coach built, same shape as PROGRAMS
+  coach: { messages: [] },
   ui: { tab: 'train', focus: 'auto', custom: [], progressEx: null, calMonth: null, histN: 30 },
 };
 
@@ -40,6 +43,7 @@ function load() {
 G.registerCustom(state.custom);
 function save() { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch {} }
 
+const progOf = id => PROGRAM[id] || state.myPrograms.find(p => p.id === id);
 const unit = () => state.profile.unit;
 const W = kg => G.fmtW(kg, unit());
 
@@ -109,6 +113,8 @@ function icon(name) {
     calendar: 'M4 6h16v14H4zM4 10h16M8 3v4M16 3v4',
     upload: 'M12 15V3M7 8l5-5 5 5M5 21h14',
     edit: 'M4 20h4L19 9l-4-4L4 16v4z',
+    coach: 'M4 5h16v11H9l-5 4zM8 10h.01M12 10h.01M16 10h.01',
+    send: 'M4 12 20 4l-6 16-2-7z',
   }[name];
   return `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="${p}"/></svg>`;
 }
@@ -119,12 +125,12 @@ const app = $('#app');
 function render() {
   if (!state.profile.onboarded) { app.innerHTML = onboardingView(); return; }
   if (state.active) { app.innerHTML = activeView(); updateTimers(); return; }
-  const views = { train: trainView, progress: progressView, history: historyView, profile: profileView };
-  app.innerHTML = `<main class="view">${views[state.ui.tab]()}</main>${navView()}`;
+  const views = { train: trainView, coach: coachView, progress: progressView, history: historyView, profile: profileView };
+  app.innerHTML = `<main class="view ${state.ui.tab}">${views[state.ui.tab]()}</main>${navView()}`;
 }
 
 function navView() {
-  const tabs = [['train', 'Train'], ['progress', 'Progress'], ['history', 'History'], ['profile', 'Profile']];
+  const tabs = [['train', 'Train'], ['coach', 'Coach'], ['progress', 'Progress'], ['history', 'History'], ['profile', 'Profile']];
   return `<nav class="tabbar">${tabs.map(([k, l]) =>
     `<button data-act="tab" data-val="${k}" class="${state.ui.tab === k ? 'on' : ''}">${icon(k)}<span>${l}</span></button>`).join('')}</nav>`;
 }
@@ -287,7 +293,7 @@ function planFromRoutine(r) {
 
 // ----- programs -----
 function programCard() {
-  const pr = state.program, p = pr && PROGRAM[pr.id];
+  const pr = state.program, p = pr && progOf(pr.id);
   if (!p) return `<button class="card promo" data-act="programs">${icon('calendar')}
     <div class="grow"><b>Follow a program</b><p class="muted sm">StrongLifts 5×5, Push/Pull/Legs, Upper/Lower and more. Each workout progresses automatically.</p></div></button>`;
   const idx = pr.day % p.days.length, d = p.days[idx];
@@ -308,7 +314,7 @@ function programCard() {
 
 /** Build the plan for the program's next day, swapping in alternatives for missing equipment. */
 function planFromProgram() {
-  const pr = state.program, p = PROGRAM[pr?.id];
+  const pr = state.program, p = progOf(pr?.id);
   if (!p) { state.program = null; return newPlan(); }
   const idx = pr.day % p.days.length, day = p.days[idx];
   const used = [];
@@ -317,7 +323,7 @@ function planFromProgram() {
     if (!EX[id] || !G.available(state, EX[id])) id = EX[x.id] ? G.alternatives(state, x.id, used)[0]?.id : null;
     if (!id) return null;
     used.push(id);
-    const e = G.buildExercise(state, id, null, x);
+    const e = buildEntry({ ...x, id });
     if (id !== x.id) e.note = `Swapped in for ${EX[x.id].name}. ${e.note}`;
     return e;
   }).filter(Boolean);
@@ -325,18 +331,28 @@ function planFromProgram() {
   save();
 }
 
+/** A ready-to-log exercise from a program or coach entry ({ id, sets, lo, hi, rest, minutes? }). */
+function buildEntry(x) {
+  const e = G.buildExercise(state, x.id, null, x);
+  if (EX[x.id].cardio && x.minutes) e.sets.forEach(s => { s.time = x.minutes * 60; });
+  return e;
+}
+
 function programsModal() {
   const cur = state.program?.id;
-  modal(`<h2>Programs</h2>
-    <p class="muted sm">Proven plans that rotate through set days. Weights still come from your own history, so every session progresses.</p>
-    <div class="picklist">${PROGRAMS.map(p => `<button class="pick" data-act="program-info" data-val="${p.id}">
+  const item = p => `<button class="pick" data-act="program-info" data-val="${p.id}">
       <b>${esc(p.name)}${p.id === cur ? ' <span class="accent sm">· current</span>' : ''}</b>
       <span class="muted sm">${p.level} · ${p.goal} · ${p.days.length} day rotation · ${p.perWeek}×/week</span>
-      <span class="sm">${esc(p.desc)}</span></button>`).join('')}</div>`, 'tall');
+      <span class="sm">${esc(p.desc)}</span></button>`;
+  modal(`<h2>Programs</h2>
+    <p class="muted sm">Proven plans that rotate through set days. Weights still come from your own history, so every session progresses.</p>
+    ${state.myPrograms.length ? `<h3>From your coach</h3><div class="picklist">${state.myPrograms.map(item).join('')}</div><h3>Built-in</h3>` : ''}
+    <div class="picklist">${PROGRAMS.map(item).join('')}</div>
+    <button class="btn ghost wide" data-act="tab" data-val="coach">${icon('coach')} Ask the coach to build one</button>`, 'tall');
 }
 
 function programInfo(id) {
-  const p = PROGRAM[id], active = state.program?.id === id;
+  const p = progOf(id), active = state.program?.id === id;
   modal(`<p class="eyebrow">${p.level} · ${p.goal} · ${p.perWeek}× per week</p><h2>${esc(p.name)}</h2>
     <p class="muted">${esc(p.desc)}</p>
     ${p.days.map((d, k) => `<div class="detail-ex"><h4>${active && state.program.day % p.days.length === k ? '▶ ' : ''}${esc(d.name)}</h4>
@@ -347,7 +363,8 @@ function programInfo(id) {
     ${active ? `<p class="muted sm">${state.program.done} session${state.program.done === 1 ? '' : 's'} done since ${fmtDate(state.program.started)}</p>
       <div class="row"><button class="btn ghost grow" data-act="programs">Other programs</button>
       <button class="btn ghost danger grow" data-act="program-end">End program</button></div>`
-      : `<button class="btn primary big" data-act="program-start" data-val="${p.id}">${state.program ? 'Switch to this program' : 'Start program'}</button>`}`, 'tall');
+      : `<button class="btn primary big" data-act="program-start" data-val="${p.id}">${state.program ? 'Switch to this program' : 'Start program'}</button>
+        ${PROGRAM[id] ? '' : `<button class="btn ghost danger wide" data-act="program-delete" data-val="${p.id}">${icon('trash')} Delete program</button>`}`}`, 'tall');
 }
 
 
@@ -356,6 +373,126 @@ function newPlan(seed = Date.now()) {
   const r = G.generate(state, { focus, customMuscles: custom, seed });
   state.plan = { ...r, focus, seed, created: Date.now() };
   save();
+}
+
+// ----- coach -----
+let coachMode = 'checking'; // 'checking' | 'claude' | 'key' | 'none' | 'blocked'
+let coachRun = null;        // { ctl, text } while an answer streams
+let coachDraft = '', coachErr = '';
+const COACH_SUGGEST = [
+  'What should I train today?',
+  'Plan a 30-minute workout with what I have',
+  'Build me a 4-week plan to bring up my bench',
+  'Why might my progress be stalling?',
+  'How much protein should I eat?',
+];
+
+function coachView() {
+  const msgs = state.coach.messages, ready = coachMode === 'claude' || coachMode === 'key';
+  return `<header class="top"><div><p class="eyebrow">AI coach</p><h1>Coach</h1></div>
+    ${msgs.length ? `<button class="btn ghost sm" data-act="coach-new">${icon('plus')} New chat</button>` : ''}</header>
+  ${coachMode === 'none' ? coachKeyCard() : ''}
+  ${coachMode === 'blocked' ? `<section class="card"><h3>The coach can't connect here</h3>
+    <p class="muted sm">Open WeZza in the Claude app to use your Claude account, or open your own copy of WeZza (for example on GitHub Pages) and add an API key.</p></section>` : ''}
+  <section class="chat" id="chat">
+    ${msgs.length ? '' : `<div class="coach-intro">${icon('coach')}
+      <p>Ask anything about your training, or have the coach plan a workout or a full program. It sees your history, recovery, lifts and equipment, and anything it plans loads straight into Train.</p></div>
+      <div class="suggest">${COACH_SUGGEST.map(q => `<button class="chip" data-act="coach-suggest" data-val="${esc(q)}" ${ready ? '' : 'disabled'}>${esc(q)}</button>`).join('')}</div>`}
+    ${msgs.map((m, i) => m.role === 'user' ? `<div class="bubble me">${esc(m.content)}</div>`
+      : `<div class="bubble coach">${coachParts(C.parseReply(m.content), i)}</div>`).join('')}
+    ${coachRun ? `<div class="bubble coach" id="coach-live">${coachLive()}</div>` : ''}
+    ${coachErr ? `<p class="coach-err">${esc(coachErr)}</p>` : ''}
+  </section>
+  <form class="composer" data-form="coach">
+    <textarea id="coach-in" data-field="coach" rows="1" maxlength="2000" placeholder="${ready ? 'Ask your coach…' : coachMode === 'checking' ? 'Connecting…' : 'Connect the coach to start'}" ${ready ? '' : 'disabled'}>${esc(coachDraft)}</textarea>
+    ${coachRun ? '<button type="button" class="btn ghost" data-act="coach-stop">Stop</button>'
+      : `<button type="submit" class="btn primary" aria-label="Send" ${ready ? '' : 'disabled'}>${icon('send')}</button>`}
+  </form>`;
+}
+
+const coachKeyCard = () => `<section class="card"><h3>Connect the coach</h3>${coachKeyForm()}</section>`;
+
+function coachKeyForm() {
+  return `<p class="muted sm">The coach runs on Claude. Open WeZza from the Claude app to use your Claude account, or paste an Anthropic API key from
+      <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a>.
+      The key stays on this device and is only sent to Anthropic. Usage is billed to your API account.</p>
+    <div class="row"><input type="password" class="search grow" id="coach-key" placeholder="sk-ant-…" autocomplete="off" spellcheck="false">
+      <button class="btn primary" data-act="coach-key-save">Save</button></div>`;
+}
+
+function coachSettingsCard() {
+  const key = C.apiKey.get();
+  return `<section class="card">
+    <div class="cardhead"><h3>AI coach</h3>${state.coach.messages.length ? '<button class="btn ghost sm" data-act="coach-new">Clear chat</button>' : ''}</div>
+    ${coachMode === 'claude' ? '<p class="muted sm">Using your Claude account.</p>'
+      : coachMode === 'checking' ? '<p class="muted sm">Checking for Claude…</p>'
+      : coachMode === 'blocked' ? '<p class="muted sm">Not available in this viewer.</p>'
+      : key ? `<p class="muted sm">API key saved on this device (…${esc(key.slice(-4))}).</p>
+        <div class="row tight"><button class="chip" data-act="coach-key-remove">Remove key</button></div>`
+      : coachKeyForm()}
+  </section>`;
+}
+
+/** HTML for a parsed reply. `i` is the message index, or -1 while it is still streaming. */
+function coachParts(parts, i) {
+  return parts.map((p, k) => {
+    if (p.type === 'text') return C.md(p.text);
+    if (p.type === 'pending') return `<div class="plancard pending"><span class="typing">Building your plan…</span></div>`;
+    const btn = (act, label, cls = 'ghost') => `<button class="btn ${cls} sm" data-act="${act}" data-i="${i}" data-k="${k}" ${i < 0 ? 'disabled' : ''}>${label}</button>`;
+    const line = x => `<li>${esc(EX[x.id].name)} <span class="muted">${EX[x.id].cardio ? (x.minutes ? x.minutes + ' min' : '')
+      : `${x.sets}×${x.lo && x.hi && x.lo !== x.hi ? `${x.lo}–${x.hi}` : x.lo || x.hi || ''}${EX[x.id].timed ? 's' : ''}`}</span></li>`;
+    if (p.type === 'workout') {
+      const list = (p.data.exercises || []).map(C.coachEntry).filter(Boolean);
+      return `<div class="plancard"><p class="eyebrow">Workout · ${list.length} exercises</p><h4>${esc(p.data.title || 'Workout')}</h4>
+        <ul>${list.map(line).join('')}</ul>
+        <div class="row tight">${btn('coach-load', `${icon('play')} Load into Train`, 'primary grow')}${btn('coach-routine', `${icon('save')} Save routine`)}</div></div>`;
+    }
+    const days = (p.data.days || []);
+    return `<div class="plancard"><p class="eyebrow">Program · ${days.length} day rotation</p><h4>${esc(p.data.title || 'Program')}</h4>
+      ${days.map(d => `<p class="sm"><b>${esc(d.name || 'Day')}</b></p><ul>${(d.exercises || []).map(C.coachEntry).filter(Boolean).map(line).join('')}</ul>`).join('')}
+      <div class="row tight">${btn('coach-program', `${icon('calendar')} Start this program`, 'primary grow')}</div></div>`;
+  }).join('');
+}
+
+const coachLive = () => coachRun.text ? coachParts(C.parseReply(coachRun.text), -1) : '<span class="typing">Thinking…</span>';
+const coachBlock = el => C.parseReply(state.coach.messages[+el.dataset.i].content)[+el.dataset.k].data;
+const routineExercise = x => ({ exId: x.id, sets: x.sets, superset: null, ...(x.lo || x.hi ? { range: { lo: x.lo, hi: x.hi, rest: x.rest } } : {}) });
+const scrollChat = () => window.scrollTo({ top: document.body.scrollHeight });
+
+async function sendCoach(text) {
+  text = String(text || '').trim();
+  if (!text || coachRun || !['claude', 'key'].includes(coachMode)) return;
+  const msgs = state.coach.messages;
+  msgs.push({ role: 'user', content: text.slice(0, 2000), t: Date.now() });
+  coachDraft = ''; coachErr = '';
+  const ctl = new AbortController();
+  coachRun = { ctl, text: '' };
+  save(); render(); scrollChat();
+  try {
+    const reply = await C.askCoach(C.coachContext(state, progOf), msgs, {
+      signal: ctl.signal,
+      onText: t => {
+        coachRun.text = t;
+        const el = $('#coach-live');
+        if (!el) return;
+        const atBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 120;
+        el.innerHTML = coachLive();
+        if (atBottom) scrollChat();
+      },
+    });
+    msgs.push({ role: 'assistant', content: reply, t: Date.now() });
+  } catch (e) {
+    const partial = e?.text ?? coachRun.text;
+    if (e?.code === 'cancelled') { if (partial) msgs.push({ role: 'assistant', content: partial + '\n\n*(stopped)*', t: Date.now() }); }
+    else {
+      coachErr = C.errorText(e?.code);
+      if (e?.code === 'bad_key') coachMode = 'none';
+    }
+  }
+  if (msgs.length > 60) msgs.splice(0, msgs.length - 60);
+  coachRun = null;
+  save();
+  if (state.ui.tab === 'coach' && !state.active) { render(); scrollChat(); }
 }
 
 // ----- active workout -----
@@ -640,9 +777,10 @@ function profileView() {
     <p class="muted sm">${p.favorites.length} favorite · ${p.excluded.length} excluded · ${state.custom.length} custom</p>
     <button class="btn ghost" data-act="custom-ex">${icon('plus')} Create custom exercise</button>
   </section>
+  ${coachSettingsCard()}
   <section class="card">
     <div class="cardhead"><h3>Program</h3><button class="btn ghost sm" data-act="programs">Browse</button></div>
-    ${state.program && PROGRAM[state.program.id] ? `<p class="sm"><b>${esc(PROGRAM[state.program.id].name)}</b> · session ${state.program.done + 1}</p>
+    ${state.program && progOf(state.program.id) ? `<p class="sm"><b>${esc(progOf(state.program.id).name)}</b> · session ${state.program.done + 1}</p>
       <div class="row tight"><button class="chip" data-act="program-info" data-val="${state.program.id}">Details</button></div>`
       : '<p class="muted sm">Not following a program. Smart workouts are built from your recovery instead.</p>'}
   </section>
@@ -714,15 +852,20 @@ function confirmThen(msg, opts, fn) {
 }
 
 /**
- * Save a file. Inside an embedded viewer downloads are blocked, so show the contents
- * (text to copy, or an image to long-press) instead.
+ * Save a file. Inside an embedded viewer the page can't download directly: ask the
+ * Claude viewer to save it, else show the contents (text to copy, or an image to long-press).
  */
-function saveFile(name, blob, text) {
+async function saveFile(name, blob, text) {
   if (window.top === window.self) {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob); a.download = name;
     a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     return;
+  }
+  const downloads = await window.claude?.use?.('downloads').catch(() => null);
+  if (downloads) {
+    try { await downloads.save({ filename: name, data: blob }); toast('Saved'); return; }
+    catch (e) { if (e?.code === 'declined') return; }
   }
   const url = URL.createObjectURL(blob);
   const m = modal(`<h2>${esc(name)}</h2>
@@ -1189,8 +1332,8 @@ function finishWorkout() {
   w.badges = G.achievements(state).filter(b => b.earned && !before.has(b.id)).map(b => b.id);
   // Following a program: move on to its next day.
   const pr = state.program;
-  if (a.program && pr?.id === a.program.id && PROGRAM[pr.id]) {
-    pr.day = (a.program.day + 1) % PROGRAM[pr.id].days.length;
+  if (a.program && pr?.id === a.program.id && progOf(pr.id)) {
+    pr.day = (a.program.day + 1) % progOf(pr.id).days.length;
     pr.done++;
   }
   state.active = null;
@@ -1367,13 +1510,54 @@ const actions = {
   'program-start': v => {
     state.program = { id: v, day: 0, done: 0, started: Date.now() };
     state.plan = null; state.ui.tab = 'train'; closeModal(); window.scrollTo(0, 0);
-    toast(`${PROGRAM[v].name} started`);
+    toast(`${progOf(v).name} started`);
   },
   'program-end': () => confirmThen('End this program? Your logged workouts stay in your history.', { ok: 'End program', danger: true },
     () => { state.program = null; state.plan = null; }),
   'program-load': () => { planFromProgram(); },
+  'program-delete': v => confirmThen('Delete this program?', { ok: 'Delete', danger: true },
+    () => { state.myPrograms = state.myPrograms.filter(p => p.id !== v); }),
+  // coach
+  'coach-suggest': v => { sendCoach(v); return 'keep'; },
+  'coach-stop': () => { coachRun?.ctl.abort(); return 'keep'; },
+  'coach-new': () => confirmThen('Start a new chat? The current conversation will be cleared.', { ok: 'New chat' },
+    () => { state.coach.messages = []; coachErr = ''; }),
+  'coach-load': (_, el) => {
+    const d = coachBlock(el);
+    const exercises = (d.exercises || []).map(C.coachEntry).filter(Boolean).map(buildEntry);
+    if (!exercises.length) { toast('No exercises in that workout match your library'); return 'keep'; }
+    state.plan = { exercises, targets: [], focus: 'coach', title: String(d.title || 'Coach workout').slice(0, 60) };
+    state.ui.tab = 'train'; window.scrollTo(0, 0); toast('Loaded. Review it, then start');
+  },
+  'coach-routine': (_, el) => {
+    const d = coachBlock(el);
+    const entries = (d.exercises || []).map(C.coachEntry).filter(Boolean);
+    if (!entries.length) { toast('No exercises in that workout match your library'); return 'keep'; }
+    state.routines.push({ id: uid(), name: String(d.title || 'Coach workout').slice(0, 40), created: Date.now(), exercises: entries.map(routineExercise) });
+    toast('Saved to your routines');
+  },
+  'coach-program': (_, el) => {
+    const d = coachBlock(el);
+    const days = (d.days || []).map(x => ({ name: String(x.name || 'Day').slice(0, 40), ex: (x.exercises || []).map(C.coachEntry).filter(Boolean) })).filter(x => x.ex.length);
+    if (!days.length) { toast('That plan has no exercises the app knows'); return 'keep'; }
+    const id = 'u_' + uid();
+    state.myPrograms.push({
+      id, name: String(d.title || 'Coach program').slice(0, 50), level: 'Custom', goal: 'Built by your coach',
+      perWeek: days.length, desc: `Built by the AI coach on ${fmtDate(Date.now())}.`, days,
+    });
+    state.program = { id, day: 0, done: 0, started: Date.now() };
+    state.plan = null; state.ui.tab = 'train'; window.scrollTo(0, 0);
+    toast('Program started. Day 1 is loaded');
+  },
+  'coach-key-save': () => {
+    const v = ($('#coach-key')?.value || '').trim();
+    if (!/^sk-ant-/.test(v)) { toast('Paste a key that starts with sk-ant-'); return 'keep'; }
+    C.apiKey.set(v); coachMode = 'key'; coachErr = ''; toast('Coach connected');
+  },
+  'coach-key-remove': () => confirmThen('Remove your API key from this device?', { ok: 'Remove', danger: true },
+    () => { C.apiKey.set(''); coachMode = 'none'; }),
   'program-skip': () => {
-    const p = PROGRAM[state.program.id];
+    const p = progOf(state.program.id);
     state.program.day = (state.program.day + 1) % p.days.length;
     planFromProgram();
   },
@@ -1401,8 +1585,8 @@ const actions = {
   },
   'manage-ex': () => { manageExModal(); return 'keep'; },
   export: () => {
-    const { profile, workouts, routines, custom, body, program } = state;
-    const text = JSON.stringify({ app: 'wezza', version: 3, exported: new Date().toISOString(), profile, workouts, routines, custom, body, program }, null, 2);
+    const { profile, workouts, routines, custom, body, program, myPrograms } = state;
+    const text = JSON.stringify({ app: 'wezza', version: 4, exported: new Date().toISOString(), profile, workouts, routines, custom, body, program, myPrograms }, null, 2);
     saveFile(`wezza-backup-${new Date().toISOString().slice(0, 10)}.json`, new Blob([text], { type: 'application/json' }), text);
     return 'keep';
   },
@@ -1556,6 +1740,7 @@ document.addEventListener('input', e => {
   if (f === 'bodyweight') { const v = parseFloat(el.value); if (v > 0) { p.bodyweight = G.fromDisplay(v, p.unit); state.plan = null; } }
   else if (f === 'name') p.name = el.value.slice(0, 40);
   else if (f === 'wnote') state.active.notes = el.value.slice(0, 2000);
+  else if (f === 'coach') { coachDraft = el.value; el.style.height = 'auto'; el.style.height = Math.min(160, el.scrollHeight) + 'px'; return; }
   else if (f === 'e-title') state.active.title = el.value.slice(0, 60);
   else if (f === 'e-start') {
     const t = new Date(el.value).getTime(), a = state.active;
@@ -1604,6 +1789,7 @@ document.addEventListener('change', e => {
         state.custom = d.custom || [];
         state.body = d.body || [];
         state.program = d.program || null;
+        state.myPrograms = d.myPrograms || [];
         G.registerCustom(state.custom);
         state.plan = null; save(); render(); toast('Backup restored');
       });
@@ -1651,7 +1837,17 @@ document.addEventListener('click', e => {
   save(); render();
 });
 
+document.addEventListener('submit', e => {
+  if (e.target.dataset.form !== 'coach') return;
+  e.preventDefault();
+  sendCoach(coachDraft);
+});
+document.addEventListener('keydown', e => {
+  if (e.target.id === 'coach-in' && e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendCoach(coachDraft); }
+});
+
 document.addEventListener('visibilitychange', () => {
+
   if (document.visibilityState === 'visible' && state.active && !wakeLock)
     navigator.wakeLock?.request('screen').then(l => wakeLock = l).catch(() => {});
 });
@@ -1661,3 +1857,4 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:' && window.top 
 }
 
 render();
+C.coachMode().then(m => { coachMode = m; if (['coach', 'profile'].includes(state.ui.tab) && !state.active) render(); });

@@ -14,6 +14,12 @@ A free, offline, installable workout app. WeZza builds each workout around how r
   - Drop sets are ignored when working out the next target.
 - **Goal-based programming.** Sets, reps and rest differ for strength, hypertrophy and endurance, and workouts are trimmed to fit your session length.
 
+### AI coach
+- **Chat with a coach that knows your training.** It sees your profile, equipment, muscle recovery, recent workouts, main lifts and body stats, and answers questions about technique, plateaus, nutrition and recovery.
+- **Plans you can use right away.** Ask for a workout and the reply includes a card you can load straight into Train or save as a routine. Ask for a multi-day plan and you can start it as a program; the app moves through its days like the built-in programs.
+- **Weights stay yours.** The coach picks exercises, sets, reps and rest; the app fills in each working weight from your history and keeps progressing it.
+- **How it connects:** opened from the Claude app, it uses your Claude account with no setup. Anywhere else, paste an Anthropic API key in the Coach tab (it's stored only on this device, never in backups, and sent only to Anthropic).
+
 ### Programs (Boostcamp / JEFIT / StrongLifts-style)
 - **Six built-in programs:** StrongLifts 5×5, Full Body Foundations, Push/Pull/Legs, Upper/Lower, Dumbbell Only and Bodyweight Basics.
 - **The next day loads automatically.** The Train tab shows "Up next" and moves to the following day each time you finish a session. You can skip a day, or generate a one-off Smart workout and stay on the program.
@@ -77,6 +83,7 @@ To install it on a phone, deploy to any static host (GitHub Pages, Netlify, …)
 | `js/data.js` | Muscles, equipment, exercise library |
 | `js/programs.js` | Built-in training programs |
 | `js/csv.js` | CSV export, Strong / Hevy import |
+| `js/coach.js` | AI coach: prompt context, Claude calls, reply parsing |
 | `js/cues.js` | Form cues per exercise |
 | `js/engine.js` | Recovery model, generator, progression, stats, achievements |
 | `js/body.js` | SVG heat map |
