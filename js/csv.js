@@ -86,7 +86,7 @@ const ALIASES = {
   'glute kickback (machine)': 'machine_glute_kickback', 'glute kickback (cable)': 'cable_glute_kickback', 'nordic hamstring curl': 'nordic_curl',
   'decline bench press (barbell)': 'decline_bench', 'decline bench press (dumbbell)': 'decline_db', 'bench press (smith machine)': 'smith_bench',
   'incline bench press (smith machine)': 'smith_incline', 'incline chest press (machine)': 'incline_machine', 'incline chest fly (dumbbell)': 'incline_fly',
-  'chest fly (machine)': 'machine_fly', 'pullover (dumbbell)': 'db_pullover', 'floor press (dumbbell)': 'floor_press', 'landmine press': 'landmine_press',
+  'pullover (dumbbell)': 'db_pullover', 'floor press (dumbbell)': 'floor_press', 'landmine press': 'landmine_press',
   'pull up (assisted)': 'assisted_pullup', 't bar row': 'tbar_row', 'pendlay row (barbell)': 'pendlay_row', 'chest supported row (dumbbell)': 'chest_supported_row',
   'seal row (barbell)': 'seal_row', 'meadows rows (barbell)': 'meadows_row', 'single arm cable row': 'single_cable_row', 'high row (machine)': 'high_row',
   'front raise (dumbbell)': 'front_raise', 'front raise (cable)': 'cable_front_raise', 'front raise (plate)': 'plate_front_raise',
