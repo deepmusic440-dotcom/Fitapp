@@ -115,6 +115,7 @@ function icon(name) {
     edit: 'M4 20h4L19 9l-4-4L4 16v4z',
     coach: 'M4 5h16v11H9l-5 4zM8 10h.01M12 10h.01M16 10h.01',
     send: 'M4 12 20 4l-6 16-2-7z',
+    camera: 'M4 8h3l2-3h6l2 3h3v11H4zM12 17a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z',
   }[name];
   return `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="${p}"/></svg>`;
 }
@@ -379,6 +380,8 @@ function newPlan(seed = Date.now()) {
 let coachMode = 'checking'; // 'checking' | 'claude' | 'key' | 'none' | 'blocked'
 let coachRun = null;        // { ctl, text } while an answer streams
 let coachDraft = '', coachErr = '';
+let coachPhotos = false;    // whether this view can send photos
+let coachImage = null;      // { blob, thumb } waiting to be sent
 const COACH_SUGGEST = [
   'What should I train today?',
   'Plan a 30-minute workout with what I have',
@@ -396,14 +399,16 @@ function coachView() {
     <p class="muted sm">Open WeZza in the Claude app to use your Claude account, or open your own copy of WeZza (for example on GitHub Pages) and add an API key.</p></section>` : ''}
   <section class="chat" id="chat">
     ${msgs.length ? '' : `<div class="coach-intro">${icon('coach')}
-      <p>Ask anything about your training, or have the coach plan a workout or a full program. It sees your history, recovery, lifts and equipment, and anything it plans loads straight into Train.</p></div>
+      <p>Ask anything about your training, or have the coach plan a workout or a full program. It sees your history, recovery, lifts and equipment, and anything it plans loads straight into Train.${coachPhotos ? ' Tap the camera to show it a photo: your form, a machine, a meal or a label.' : ''}</p></div>
       <div class="suggest">${COACH_SUGGEST.map(q => `<button class="chip" data-act="coach-suggest" data-val="${esc(q)}" ${ready ? '' : 'disabled'}>${esc(q)}</button>`).join('')}</div>`}
-    ${msgs.map((m, i) => m.role === 'user' ? `<div class="bubble me">${esc(m.content)}</div>`
+    ${msgs.map((m, i) => m.role === 'user' ? `<div class="bubble me">${m.thumb ? `<img class="photo" src="${esc(m.thumb)}" alt="Your photo">` : m.photo ? `<span class="phototag">${icon('camera')} Photo</span>` : ''}${esc(m.content)}</div>`
       : `<div class="bubble coach">${coachParts(C.parseReply(m.content), i)}</div>`).join('')}
     ${coachRun ? `<div class="bubble coach" id="coach-live">${coachLive()}</div>` : ''}
     ${coachErr ? `<p class="coach-err">${esc(coachErr)}</p>` : ''}
   </section>
   <form class="composer" data-form="coach">
+    ${coachImage ? `<div class="attach"><img src="${coachImage.thumb}" alt="Photo to send"><button type="button" class="icbtn" data-act="coach-photo-clear" aria-label="Remove photo">${icon('x')}</button></div>` : ''}
+    ${coachPhotos && ready && !coachRun ? `<label class="btn ghost camera" aria-label="Add a photo">${icon('camera')}<input type="file" accept="image/*" data-field="coach-photo" hidden></label>` : ''}
     <textarea id="coach-in" data-field="coach" rows="1" maxlength="2000" placeholder="${ready ? 'Ask your coach…' : coachMode === 'checking' ? 'Connecting…' : 'Connect the coach to start'}" ${ready ? '' : 'disabled'}>${esc(coachDraft)}</textarea>
     ${coachRun ? '<button type="button" class="btn ghost" data-act="coach-stop">Stop</button>'
       : `<button type="submit" class="btn primary" aria-label="Send" ${ready ? '' : 'disabled'}>${icon('send')}</button>`}
@@ -459,18 +464,22 @@ const coachBlock = el => C.parseReply(state.coach.messages[+el.dataset.i].conten
 const routineExercise = x => ({ exId: x.id, sets: x.sets, superset: null, ...(x.lo || x.hi ? { range: { lo: x.lo, hi: x.hi, rest: x.rest } } : {}) });
 const scrollChat = () => window.scrollTo({ top: document.body.scrollHeight });
 
-async function sendCoach(text) {
-  text = String(text || '').trim();
+async function sendCoach(typed) {
+  const image = coachImage;
+  const text = String(typed || '').trim() || (image ? 'Take a look at this photo. What do you see, and what should I do?' : '');
   if (!text || coachRun || !['claude', 'key'].includes(coachMode)) return;
   const msgs = state.coach.messages;
-  msgs.push({ role: 'user', content: text.slice(0, 2000), t: Date.now() });
-  coachDraft = ''; coachErr = '';
+  const ask = { role: 'user', content: text.slice(0, 2000), t: Date.now(), ...(image ? { photo: true, thumb: image.thumb } : {}) };
+  msgs.push(ask);
+  // Keep thumbnails for the latest few photos only, so saved data stays small.
+  msgs.filter(m => m.thumb).slice(0, -8).forEach(m => delete m.thumb);
+  coachDraft = ''; coachErr = ''; coachImage = null;
   const ctl = new AbortController();
   coachRun = { ctl, text: '' };
   save(); render(); scrollChat();
   try {
     const reply = await C.askCoach(C.coachContext(state, progOf), msgs, {
-      signal: ctl.signal,
+      signal: ctl.signal, image: image?.blob,
       onText: t => {
         coachRun.text = t;
         const el = $('#coach-live');
@@ -485,8 +494,11 @@ async function sendCoach(text) {
     const partial = e?.text ?? coachRun.text;
     if (e?.code === 'cancelled') { if (partial) msgs.push({ role: 'assistant', content: partial + '\n\n*(stopped)*', t: Date.now() }); }
     else {
+      // Nothing came back: take the question off the chat and put it back in the box to retry.
       coachErr = C.errorText(e?.code);
-      if (e?.code === 'bad_key') coachMode = 'none';
+      msgs.splice(msgs.indexOf(ask), 1);
+      coachDraft = String(typed || ''); coachImage = image;
+      if (e?.code === 'bad_key') { coachMode = 'none'; coachPhotos = false; }
     }
   }
   if (msgs.length > 60) msgs.splice(0, msgs.length - 60);
@@ -1520,6 +1532,7 @@ const actions = {
   // coach
   'coach-suggest': v => { sendCoach(v); return 'keep'; },
   'coach-stop': () => { coachRun?.ctl.abort(); return 'keep'; },
+  'coach-photo-clear': () => { coachImage = null; },
   'coach-new': () => confirmThen('Start a new chat? The current conversation will be cleared.', { ok: 'New chat' },
     () => { state.coach.messages = []; coachErr = ''; }),
   'coach-load': (_, el) => {
@@ -1552,10 +1565,10 @@ const actions = {
   'coach-key-save': () => {
     const v = ($('#coach-key')?.value || '').trim();
     if (!/^sk-ant-/.test(v)) { toast('Paste a key that starts with sk-ant-'); return 'keep'; }
-    C.apiKey.set(v); coachMode = 'key'; coachErr = ''; toast('Coach connected');
+    C.apiKey.set(v); coachMode = 'key'; coachPhotos = true; coachErr = ''; toast('Coach connected');
   },
   'coach-key-remove': () => confirmThen('Remove your API key from this device?', { ok: 'Remove', danger: true },
-    () => { C.apiKey.set(''); coachMode = 'none'; }),
+    () => { C.apiKey.set(''); coachMode = 'none'; coachPhotos = false; }),
   'program-skip': () => {
     const p = progOf(state.program.id);
     state.program.day = (state.program.day + 1) % p.days.length;
@@ -1796,6 +1809,13 @@ document.addEventListener('change', e => {
     }).catch(() => toast("That file isn't a WeZza backup"));
     el.value = '';
   }
+  else if (f === 'coach-photo') {
+    const file = el.files[0]; if (!file) return;
+    C.prepareImage(file).then(img => {
+      coachImage = img; render();
+      $('#coach-in')?.focus();
+    }).catch(e => toast(C.errorText(e?.code)));
+  }
   else if (f === 'import-csv') {
     const file = el.files[0]; if (!file) return;
     el.value = '';
@@ -1857,4 +1877,8 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:' && window.top 
 }
 
 render();
-C.coachMode().then(m => { coachMode = m; if (['coach', 'profile'].includes(state.ui.tab) && !state.active) render(); });
+C.coachMode().then(async m => {
+  coachMode = m;
+  coachPhotos = await C.photosAllowed(m);
+  if (['coach', 'profile'].includes(state.ui.tab) && !state.active) render();
+});

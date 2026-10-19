@@ -17,6 +17,7 @@ A free, offline, installable workout app. WeZza builds each workout around how r
 ### AI coach
 - **Chat with a coach that knows your training.** It sees your profile, equipment, muscle recovery, recent workouts, main lifts and body stats, and answers questions about technique, plateaus, nutrition and recovery.
 - **Plans you can use right away.** Ask for a workout and the reply includes a card you can load straight into Train or save as a routine. Ask for a multi-day plan and you can start it as a program; the app moves through its days like the built-in programs.
+- **Show it a photo.** Tap the camera to take or pick a picture of your form, a gym machine, a meal, a nutrition label or a program, and ask about it. Photos are shrunk on the device before sending; only a small thumbnail stays in the chat.
 - **Weights stay yours.** The coach picks exercises, sets, reps and rest; the app fills in each working weight from your history and keeps progressing it.
 - **How it connects:** opened from the Claude app, it uses your Claude account with no setup. Anywhere else, paste an Anthropic API key in the Coach tab (it's stored only on this device, never in backups, and sent only to Anthropic).
 

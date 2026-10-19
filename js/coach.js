@@ -23,6 +23,42 @@ export function viewerSample() {
   return samplePromise;
 }
 
+/** Whether photos can be sent: through the viewer only when it reports image support. */
+export async function photosAllowed(mode) {
+  if (mode === 'key') return true;
+  if (mode !== 'claude') return false;
+  const limits = await (await viewerSample()).limits().catch(() => null);
+  return !!limits?.images;
+}
+
+/**
+ * Shrink a picked photo for sending (long side 1568px, JPEG) plus a small thumbnail
+ * for the chat history. Rejects { code: 'image_decode' } if the browser can't read it.
+ */
+export async function prepareImage(file) {
+  let bmp;
+  try { bmp = await createImageBitmap(file, { imageOrientation: 'from-image' }); } catch { throw { code: 'image_decode' }; }
+  const draw = max => {
+    const k = Math.min(1, max / Math.max(bmp.width, bmp.height));
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(bmp.width * k)); c.height = Math.max(1, Math.round(bmp.height * k));
+    c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+    return c;
+  };
+  const blob = await new Promise(r => draw(1568).toBlob(r, 'image/jpeg', 0.85));
+  const thumb = draw(480).toDataURL('image/jpeg', 0.7);
+  bmp.close?.();
+  if (!blob) throw { code: 'image_decode' };
+  return { blob, thumb };
+}
+
+const toBase64 = blob => new Promise((resolve, reject) => {
+  const r = new FileReader();
+  r.onload = () => resolve(String(r.result).split(',')[1]);
+  r.onerror = () => reject({ code: 'image_decode' });
+  r.readAsDataURL(blob);
+});
+
 /** Which way the coach can reach Claude: 'claude', 'key', or 'none' (framed elsewhere: 'blocked'). */
 export async function coachMode() {
   if (await viewerSample()) return 'claude';
@@ -35,25 +71,32 @@ function turns(history) {
   const out = [];
   for (const m of history.slice(-MAX_TURNS)) {
     if (!out.length && m.role !== 'user') continue;
+    // Photos go only with the newest message; earlier ones are noted so replies about them still make sense.
+    const content = (m.photo ? '[The athlete attached a photo to this message.]\n' : '') + m.content;
     const last = out.at(-1);
-    if (last?.role === m.role) last.content += '\n\n' + m.content;
-    else out.push({ role: m.role, content: m.content });
+    if (last?.role === m.role) last.content += '\n\n' + content;
+    else out.push({ role: m.role, content });
   }
   return out;
 }
 
 /**
- * Ask the coach. `onText` receives the whole answer so far as it streams.
- * Rejects with { code } — see errorText().
+ * Ask the coach. `onText` receives the whole answer so far as it streams; `image`
+ * (a JPEG Blob) goes with the newest message. Rejects with { code } — see errorText().
  */
-export async function askCoach(context, history, { onText, signal }) {
+export async function askCoach(context, history, { onText, signal, image }) {
   const msgs = turns(history);
   const sample = await viewerSample();
   if (sample) {
     const { text } = await sample([{ role: 'user', content: context }, ...msgs], {
-      cache: false, signal, onText: ({ text }) => onText(text),
+      cache: false, signal, onText: ({ text }) => onText(text), ...(image ? { images: image } : {}),
     });
     return text;
+  }
+  if (image) {
+    const last = msgs.at(-1);
+    last.content = [{ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: await toBase64(image) } },
+      { type: 'text', text: last.content }];
   }
   const key = apiKey.get();
   if (!key) throw { code: 'no_key' };
@@ -92,6 +135,9 @@ export function errorText(code) {
     no_key: 'Add an Anthropic API key to use the coach.',
     offline: 'Couldn’t reach Claude. Check your connection and try again.',
     prompt_too_large: 'This chat got too long. Start a new chat and ask again.',
+    images_unavailable: 'Photos can’t be sent from this view. Ask in words instead.',
+    image_rejected: 'That photo couldn’t be used. Try a different one.',
+    image_decode: 'Couldn’t read that photo. Try a JPEG or PNG.',
   }[code] || 'Something went wrong. Try again.';
 }
 
@@ -172,6 +218,7 @@ ${lib}
 - Use only ids from the library. "reps" is [low, high] (equal for a fixed count); for timed exercises they are seconds. Cardio uses "minutes" instead of sets and reps. "rest" is seconds.
 - Do not put weights in the JSON. The app sets each working weight from the athlete's history and progresses it automatically. You may suggest loads in the text.
 - Fit workouts to their session length, recovery and equipment unless they ask otherwise. Don't restate the JSON as a list; the app shows it as a card.
+- The athlete may attach a photo: their form or physique, a gym machine or equipment, a meal or nutrition label, a program or whiteboard, a screenshot from another app, or an injury. Say briefly what you see that matters, then answer. A single frame shows only one moment of a lift, so say what you can and can't judge from it. For equipment, explain how to use it and suggest matching exercises from the library. For food, give rough estimates and say so. Don't try to identify people.
 - For pain, injury or medical questions, be careful: suggest safe alternatives, don't diagnose, and recommend a qualified professional when appropriate.`;
 }
 
