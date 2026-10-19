@@ -44,6 +44,7 @@ export const FOCUS = {
 //        (per hand for dumbbell/kettlebell exercises flagged perHand).
 // bw: bodyweight exercise (load is added weight, default 0).
 // timed: reps are seconds.
+// cardio: logged as distance + duration instead of weight × reps; never auto-generated.
 const E = (id, name, primary, secondary, equip, type, ratio, extra = {}) =>
   ({ id, name, primary, secondary, equip, type, ratio, ...extra });
 
@@ -160,6 +161,16 @@ export const EXERCISES = [
   E('ab_wheel', 'Ab Wheel Rollout', ['abs'], ['lats', 'obliques'], [], 'isolation', 0, { bw: true }),
   E('pallof', 'Pallof Press', ['obliques'], ['abs'], ['cable'], 'isolation', 0.12),
   E('woodchop', 'Cable Woodchop', ['obliques'], ['abs', 'shoulders'], ['cable'], 'isolation', 0.15),
+
+  // Cardio
+  E('run', 'Running', ['quads', 'hamstrings', 'calves'], ['glutes'], [], 'compound', 0, { cardio: true }),
+  E('walk', 'Walking', ['calves'], ['quads', 'glutes'], [], 'compound', 0, { cardio: true }),
+  E('bike', 'Cycling', ['quads'], ['glutes', 'hamstrings', 'calves'], [], 'compound', 0, { cardio: true }),
+  E('row_erg', 'Rowing Machine', ['upperback', 'lats', 'quads'], ['hamstrings', 'glutes', 'biceps'], [], 'compound', 0, { cardio: true }),
+  E('elliptical', 'Elliptical', ['quads', 'glutes'], ['hamstrings', 'calves'], [], 'compound', 0, { cardio: true }),
+  E('stairs', 'Stair Climber', ['glutes', 'quads'], ['calves', 'hamstrings'], [], 'compound', 0, { cardio: true }),
+  E('jump_rope', 'Jump Rope', ['calves'], ['shoulders', 'forearms'], [], 'compound', 0, { cardio: true }),
+  E('swim', 'Swimming', ['lats', 'shoulders'], ['upperback', 'triceps'], [], 'compound', 0, { cardio: true }),
 ];
 
 export const EX = Object.fromEntries(EXERCISES.map(e => [e.id, e]));

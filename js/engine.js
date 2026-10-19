@@ -28,7 +28,13 @@ function roundLoad(kg, ex, unit) {
 }
 
 // ---------- history helpers ----------
-export const workingSets = ex => ex.sets.filter(s => s.done && !s.warmup && s.reps > 0);
+export const workingSets = ex => ex.sets.filter(s => s.done && !s.warmup && (s.reps > 0 || s.time > 0 || s.dist > 0));
+
+/** Set-equivalents of training stress: one per lifting set, one per 15 min of cardio. */
+export function setLoad(exId, sets) {
+  if (!EX[exId]?.cardio) return sets.length;
+  return Math.min(4, sets.reduce((a, s) => a + (s.time || 0), 0) / 900);
+}
 
 export function e1rm(w, r) {
   if (!w || !r) return 0;
@@ -61,7 +67,7 @@ export function muscleFatigue(state, now = Date.now()) {
     for (const ex of w.exercises) {
       const def = EX[ex.exId];
       if (!def) continue;
-      const n = workingSets(ex).length;
+      const n = setLoad(ex.exId, workingSets(ex));
       def.primary.forEach(m => load[m] = (load[m] || 0) + n);
       def.secondary.forEach(m => load[m] = (load[m] || 0) + n * 0.5);
     }
@@ -88,19 +94,29 @@ const SCHEMES = {
 const TIMED = { strength: [30, 45], hypertrophy: [30, 60], endurance: [45, 90] };
 const LEVEL = { beginner: 0.6, intermediate: 1, advanced: 1.35 };
 
-export function scheme(profile, ex) {
+/** Sets, rep range and rest for an exercise. `over` (from a program) replaces the goal defaults. */
+export function scheme(profile, ex, over = {}) {
   const s = { ...SCHEMES[profile.goal][ex.type] };
   if (ex.timed) [s.lo, s.hi] = TIMED[profile.goal];
   else if (ex.bw && !ex.timed) { s.lo = Math.max(s.lo, 8); s.hi = Math.max(s.hi, 15); }
   if (profile.restOverride) s.rest = profile.restOverride;
+  for (const k of ['sets', 'lo', 'hi', 'rest']) if (over[k] != null) s[k] = over[k];
   return s;
 }
 
+/** Cardio: repeat the last session's distance and time, nudging the time up slightly. */
+function prescribeCardio(state, exId) {
+  const last = exerciseHistory(state, exId)[0]?.sets[0];
+  if (!last) return { weight: 0, reps: 0, dist: 0, time: 20 * 60, sets: 1, rest: 0, note: 'Log your distance and time' };
+  return { weight: 0, reps: 0, dist: last.dist || 0, time: last.time || 0, sets: 1, rest: 0, note: 'Match last time, or go a little further' };
+}
+
 /** Target weight (kg) and reps for an exercise based on its history. */
-export function prescribe(state, exId) {
+export function prescribe(state, exId, over) {
   const { profile } = state;
   const ex = EX[exId];
-  const s = scheme(profile, ex);
+  if (ex.cardio) return prescribeCardio(state, exId);
+  const s = scheme(profile, ex, over);
   const hist = exerciseHistory(state, exId);
   const unit = profile.unit;
   let weight, reps = s.lo, note = '';
@@ -112,14 +128,22 @@ export function prescribe(state, exId) {
     const allHit = atTop.every(x => x.reps >= s.hi);
     const missed = atTop.some(x => x.reps < s.lo);
     const best = Math.max(...atTop.map(x => x.reps));
+    // RPE (when logged) fine-tunes the jump: very easy sets earn double, max-effort sets hold.
+    const rpes = atTop.map(x => x.rpe).filter(Boolean);
+    const rpe = rpes.length ? Math.max(...rpes) : 0;
     if (ex.bw && !topW) {
       weight = 0;
       reps = Math.min(best + 1, ex.timed ? s.hi + 30 : s.hi + 10);
       note = best + 1 > s.hi ? 'Add reps or load' : 'Beat last time by 1';
+    } else if (allHit && rpe >= 10) {
+      weight = topW;
+      reps = s.hi;
+      note = 'Same weight. That was max effort, so make it feel easier first';
     } else if (allHit) {
-      weight = topW + increment(ex, unit);
+      const inc = increment(ex, unit) * (rpe && rpe <= 7 ? 2 : 1);
+      weight = topW + inc;
       reps = s.lo;
-      note = `+${fmtW(increment(ex, unit), unit)} ${unit} — you earned it`;
+      note = `+${fmtW(inc, unit)} ${unit}${rpe && rpe <= 7 ? '. That felt easy' : ': you earned it'}`;
     } else if (missed) {
       const prev = hist[1]?.sets;
       const missedTwice = prev && prev.some(x => x.reps < s.lo && (x.weight || 0) >= topW);
@@ -157,12 +181,22 @@ function warmups(target, ex, unit) {
   }));
 }
 
-export function buildExercise(state, exId, setsOverride) {
-  const p = prescribe(state, exId);
+/**
+ * A ready-to-log exercise. `setsOverride` keeps a routine's set count;
+ * `over` ({ sets, lo, hi, rest }) pins a program's rep range so it survives being saved as a routine.
+ */
+export function buildExercise(state, exId, setsOverride, over) {
+  const p = prescribe(state, exId, over);
+  if (EX[exId].cardio) {
+    const n = setsOverride ?? 1;
+    return { exId, sets: Array.from({ length: n }, () => ({ weight: 0, reps: 0, dist: p.dist, time: p.time, done: false })), rest: 0, target: null, note: p.note };
+  }
   const n = setsOverride ?? p.sets;
   const sets = Array.from({ length: n }, () => ({ weight: p.weight, reps: p.reps, done: false }));
   const pre = state.profile.warmups ? warmups(p.weight, EX[exId], state.profile.unit) : [];
-  return { exId, sets: [...pre, ...sets], rest: p.rest, target: { lo: p.lo, hi: p.hi }, note: p.note };
+  const out = { exId, sets: [...pre, ...sets], rest: p.rest, target: { lo: p.lo, hi: p.hi }, note: p.note };
+  if (over && (over.lo != null || over.hi != null)) out.range = { lo: p.lo, hi: p.hi, rest: p.rest };
+  return out;
 }
 
 // ---------- generator ----------
@@ -212,7 +246,7 @@ export function generate(state, { focus = 'auto', customMuscles = [], seed = Dat
   const chosen = [];
 
   const pick = (muscle, preferCompound) => {
-    const cands = EXERCISES.filter(e => e.primary.includes(muscle) && available(state, e) && !chosen.includes(e.id));
+    const cands = EXERCISES.filter(e => e.primary.includes(muscle) && !e.cardio && available(state, e) && !chosen.includes(e.id));
     if (!cands.length) return null;
     const score = e =>
       (preferCompound && e.type === 'compound' ? 4 : 0) +
@@ -260,7 +294,8 @@ export function generate(state, { focus = 'auto', customMuscles = [], seed = Dat
 export function estimateMinutes(exercises) {
   let sec = 0;
   for (const ex of exercises) {
-    for (const s of ex.sets) sec += (EX[ex.exId].timed ? s.reps : 40) + (s.warmup ? 45 : ex.rest);
+    const d = EX[ex.exId];
+    for (const s of ex.sets) sec += d.cardio ? (s.time || 0) : (d.timed ? s.reps : 40) + (s.warmup ? 45 : (ex.rest ?? 90));
     sec += 60; // setup / transition
   }
   return Math.round(sec / 60);
@@ -283,7 +318,8 @@ function fitToTime(exercises, minutes) {
 export function alternatives(state, exId, exclude = []) {
   const ex = EX[exId];
   return EXERCISES
-    .filter(e => e.id !== exId && !exclude.includes(e.id) && available(state, e) && e.primary.some(m => ex.primary.includes(m)))
+    .filter(e => e.id !== exId && !exclude.includes(e.id) && available(state, e) && !!e.cardio === !!ex.cardio
+      && (ex.cardio || e.primary.some(m => ex.primary.includes(m))))
     .sort((a, b) => (b.primary[0] === ex.primary[0]) - (a.primary[0] === ex.primary[0]) || (b.type === ex.type) - (a.type === ex.type));
 }
 
@@ -293,17 +329,31 @@ export function workoutVolume(w) {
 }
 
 export function personalBests(state, exId, before = Infinity) {
-  let best1rm = 0, bestW = 0, bestReps = 0;
+  let best1rm = 0, bestW = 0, bestReps = 0, bestDist = 0, bestTime = 0, bestSetVol = 0;
   for (const h of exerciseHistory(state, exId)) {
     if (h.date >= before) continue;
     for (const s of h.sets) {
       best1rm = Math.max(best1rm, e1rm(s.weight, s.reps));
       bestW = Math.max(bestW, s.weight || 0);
-      bestReps = Math.max(bestReps, s.reps);
+      bestReps = Math.max(bestReps, s.reps || 0);
+      bestDist = Math.max(bestDist, s.dist || 0);
+      bestTime = Math.max(bestTime, s.time || 0);
+      bestSetVol = Math.max(bestSetVol, (s.weight || 0) * (s.reps || 0));
     }
   }
-  return { best1rm, bestW, bestReps };
+  return { best1rm, bestW, bestReps, bestDist, bestTime, bestSetVol };
 }
+
+/** Heaviest weight lifted for at least n reps, for the usual rep counts (Strong's "rep maxes"). */
+export function repMaxes(state, exId) {
+  const sets = exerciseHistory(state, exId).flatMap(h => h.sets).filter(s => s.weight > 0);
+  return [1, 2, 3, 4, 5, 6, 8, 10, 12, 15]
+    .map(n => ({ n, w: Math.max(0, ...sets.filter(s => s.reps >= n).map(s => s.weight)) }))
+    .filter(r => r.w > 0);
+}
+
+/** Seconds per km for a cardio set, or 0 when it can't be worked out. */
+export const pace = s => s.dist > 0 && s.time > 0 ? s.time / s.dist : 0;
 
 /** PRs achieved in a workout, compared to everything before it. */
 export function workoutPRs(state, w) {
@@ -315,6 +365,12 @@ export function workoutPRs(state, w) {
     const prev = personalBests(state, ex.exId, w.start);
     const hadHistory = exerciseHistory(state, ex.exId).some(h => h.date < w.start);
     if (!hadHistory) continue;
+    if (def.cardio) {
+      const bd = Math.max(...sets.map(s => s.dist || 0)), bt = Math.max(...sets.map(s => s.time || 0));
+      if (bd > prev.bestDist) prs.push({ exId: ex.exId, kind: 'Longest distance', value: bd, dist: true });
+      else if (bt > prev.bestTime) prs.push({ exId: ex.exId, kind: 'Longest session', value: bt, time: true });
+      continue;
+    }
     const b1 = Math.max(...sets.map(s => e1rm(s.weight, s.reps)));
     const bw = Math.max(...sets.map(s => s.weight || 0));
     const br = Math.max(...sets.map(s => s.reps));
@@ -353,6 +409,7 @@ export function setsPerMuscle(state, days = 7) {
   for (const w of state.workouts) {
     if (w.start < since) continue;
     for (const ex of w.exercises) {
+      if (EX[ex.exId]?.cardio) continue;
       const n = workingSets(ex).length;
       EX[ex.exId]?.primary.forEach(m => out[m] += n);
       EX[ex.exId]?.secondary.forEach(m => out[m] += n * 0.5);
@@ -415,7 +472,13 @@ export const BADGES = [
   { id: 'bwbench', icon: '🛡️', name: 'Bodyweight Bench', desc: 'Bench press your bodyweight', goal: 1, get: c => c.bwbench },
   { id: 'squat15', icon: '🦵', name: 'Big Squat', desc: 'Squat 1.5× bodyweight', goal: 1, get: c => c.squat15 },
   { id: 'dl2', icon: '⚡', name: 'Double Pull', desc: 'Deadlift 2× bodyweight', goal: 1, get: c => c.dl2 },
+  { id: 'km42', icon: '🏃', name: 'Marathon Total', desc: 'Log 42.2 km of cardio', goal: 42.195, get: c => c.km },
+  { id: 'program', icon: '📋', name: 'Program Graduate', desc: 'Finish 24 program workouts', goal: 24, get: c => c.program },
 ];
+
+/** Total cardio distance (km) across all workouts. */
+export const totalDistance = ws => ws.reduce((a, w) => a + w.exercises.reduce((b, ex) =>
+  b + (EX[ex.exId]?.cardio ? workingSets(ex).reduce((c, s) => c + (s.dist || 0), 0) : 0), 0), 0);
 
 export function achievements(state) {
   const ws = state.workouts;
@@ -430,6 +493,8 @@ export function achievements(state) {
     bwbench: +ratioLift(state, 'bench', 1),
     squat15: +ratioLift(state, 'squat', 1.5),
     dl2: +ratioLift(state, 'deadlift', 2),
+    km: totalDistance(ws),
+    program: ws.filter(w => w.program).length,
   };
   return BADGES.map(b => { const v = b.get(c); return { ...b, value: v, earned: v >= b.goal, pct: Math.min(1, v / b.goal) }; });
 }
