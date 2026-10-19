@@ -344,6 +344,29 @@ export function personalBests(state, exId, before = Infinity) {
   return { best1rm, bestW, bestReps, bestDist, bestTime, bestSetVol };
 }
 
+/**
+ * Each exercise's most recent session and the one before it, newest first:
+ * [{ exId, date, sets, prev: { date, sets } | null }].
+ */
+export function lastSessions(state) {
+  const seen = new Map();
+  for (const w of [...state.workouts].sort((a, b) => (b.end || b.start) - (a.end || a.start))) {
+    const date = w.end || w.start;
+    for (const ex of w.exercises) {
+      const sets = workingSets(ex);
+      if (!sets.length) continue;
+      const e = seen.get(ex.exId);
+      if (!e) seen.set(ex.exId, { exId: ex.exId, date, sets, prev: null });
+      else if (!e.prev && e.date !== date) e.prev = { date, sets };
+    }
+  }
+  return [...seen.values()];
+}
+
+/** The heaviest set (most reps breaks a tie). */
+export const topSet = sets => sets.reduce((a, s) =>
+  (s.weight || 0) > (a.weight || 0) || ((s.weight || 0) === (a.weight || 0) && (s.reps || 0) > (a.reps || 0)) ? s : a, sets[0]);
+
 /** Heaviest weight lifted for at least n reps, for the usual rep counts (Strong's "rep maxes"). */
 export function repMaxes(state, exId) {
   const sets = exerciseHistory(state, exId).flatMap(h => h.sets).filter(s => s.weight > 0);

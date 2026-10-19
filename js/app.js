@@ -15,7 +15,7 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 const DEFAULT = {
   profile: {
     onboarded: false, name: '', goal: 'hypertrophy', level: 'intermediate', sex: 'male',
-    bodyweight: 75, unit: 'kg', minutes: 45, equipment: Object.keys(EQUIPMENT),
+    bodyweight: G.fromDisplay(165, 'lb'), unit: 'lb', minutes: 45, equipment: Object.keys(EQUIPMENT),
     excluded: [], favorites: [], warmups: true, core: true, restOverride: 0, sound: true, weeklyGoal: 3, rpe: false,
   },
   workouts: [],
@@ -28,6 +28,7 @@ const DEFAULT = {
   myPrograms: [], // programs the coach built, same shape as PROGRAMS
   coach: { messages: [] },
   ui: { tab: 'train', focus: 'auto', custom: [], progressEx: null, calMonth: null, histN: 30 },
+  flags: { lbDefault: true }, // one-time migrations already applied
 };
 
 let state = load();
@@ -36,7 +37,15 @@ function load() {
     let raw = localStorage.getItem(KEY);
     for (const k of LEGACY_KEYS) if (!raw) raw = localStorage.getItem(k);
     const s = JSON.parse(raw);
-    if (s) return { ...DEFAULT, ...s, profile: { ...DEFAULT.profile, ...s.profile }, ui: { ...DEFAULT.ui, ...s.ui } };
+    if (s) {
+      // Pounds became the default: switch saved data over once. Profile → kg switches back.
+      if (!s.flags?.lbDefault) {
+        s.flags = { ...s.flags, lbDefault: true };
+        if (s.profile) s.profile.unit = 'lb';
+        if (!s.active) s.plan = null;
+      }
+      return { ...DEFAULT, ...s, profile: { ...DEFAULT.profile, ...s.profile }, ui: { ...DEFAULT.ui, ...s.ui } };
+    }
   } catch {}
   return structuredClone(DEFAULT);
 }
@@ -82,6 +91,12 @@ function fmtDur(ms) {
   return h ? `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}` : `${m}:${String(sec).padStart(2, '0')}`;
 }
 const fmtDate = t => new Date(t).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+/** "today", "yesterday", "3 days ago", then a date. */
+function ago(t) {
+  const day = d => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x.getTime(); };
+  const n = Math.round((day(Date.now()) - day(t)) / 864e5);
+  return n <= 0 ? 'today' : n === 1 ? 'yesterday' : n < 7 ? `${n} days ago` : new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
 const fmtBig = n => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e4 ? Math.round(n / 1e3) + 'k' : Math.round(n).toLocaleString();
 const musclesOf = e => [...e.primary, ...e.secondary].map(m => MUSCLES[m].name);
 
@@ -164,7 +179,7 @@ function onboardingView() {
         <label class="field grow">Bodyweight
           <input type="number" inputmode="decimal" data-field="bodyweight" value="${W(p.bodyweight)}">
         </label>
-        <div class="seg">${chip('p-unit', 'kg', 'kg', p.unit === 'kg')}${chip('p-unit', 'lb', 'lb', p.unit === 'lb')}</div>
+        <div class="seg">${chip('p-unit', 'lb', 'lb', p.unit === 'lb')}${chip('p-unit', 'kg', 'kg', p.unit === 'kg')}</div>
       </div>
       <div class="chips">
         ${chip('p-sex', 'male', 'Male', p.sex === 'male')}
@@ -238,7 +253,7 @@ function trainView() {
         <button class="btn ghost sm" data-act="regen" aria-label="Regenerate">${icon('refresh')}</button>
       </div>
     </div>
-    ${plan.exercises.length ? plan.exercises.map((e, i) => planItem(e, i)).join('') :
+    ${plan.exercises.length ? (lastMap => plan.exercises.map((e, i) => planItem(e, i, lastMap.get(e.exId))).join(''))(new Map(G.lastSessions(state).map(x => [x.exId, x]))) :
       `<div class="empty">No exercises match. ${selecting ? 'Tap a muscle above.' : 'Add equipment in Profile.'}</div>`}
     <button class="btn ghost wide" data-act="add-ex" data-ctx="plan">${icon('plus')} Add exercise</button>
   </section>
@@ -246,7 +261,7 @@ function trainView() {
   <div class="sticky-cta"><button class="btn primary big" data-act="start" ${plan.exercises.length ? '' : 'disabled'}>Start workout</button></div>`;
 }
 
-function planItem(e, i) {
+function planItem(e, i, last) {
   const d = EX[e.exId];
   const work = e.sets.filter(s => !s.warmup);
   const s0 = work[0] || { reps: 0, weight: 0 };
@@ -258,6 +273,7 @@ function planItem(e, i) {
     <div class="exmain" data-act="ex-info" data-val="${d.id}">
       <h4>${esc(d.name)}</h4>
       <p>${d.cardio ? load : `${work.length} sets · ${load}${range}`}</p>
+      ${last ? `<p class="lastline sm">Last: <b>${esc(lastText(d, last.sets))}</b> · ${ago(last.date)}</p>` : ''}
       <p class="muted sm">${d.primary.map(m => MUSCLES[m].name).join(', ')}${e.note ? ` · <span class="accent">${esc(e.note)}</span>` : ''}</p>
     </div>
     <button class="icbtn" data-act="swap" data-ctx="plan" data-i="${i}" aria-label="Swap">${icon('swap')}</button>
@@ -548,7 +564,8 @@ function activeView() {
 
 function activeExercise(e, i) {
   const d = EX[e.exId];
-  const prev = G.exerciseHistory(state, e.exId).find(h => h.date < state.active.start)?.sets || [];
+  const prevSession = G.exerciseHistory(state, e.exId).find(h => h.date < state.active.start);
+  const prev = prevSession?.sets || [];
   const allDone = e.sets.length && e.sets.every(s => s.done);
   const a = state.active, askRpe = state.profile.rpe && !d.cardio;
   let wi = 0;
@@ -580,6 +597,7 @@ function activeExercise(e, i) {
       <div data-act="ex-info" data-val="${d.id}" class="grow">
         <h3>${esc(d.name)}</h3>
         <p class="muted sm">${d.cardio ? 'Cardio · distance and time' : `${d.primary.map(m => MUSCLES[m].name).join(', ')}${e.target ? ` · target ${e.target.lo === e.target.hi ? e.target.lo : `${e.target.lo}–${e.target.hi}`}${d.timed ? 's' : ' reps'}` : ''}${d.perHand ? ' · per hand' : ''}`}</p>
+        ${prevSession ? `<p class="lastline sm">Last time (${ago(prevSession.date)}): <b>${esc(prevSession.sets.map(s => setText(d, s)).join(', '))}</b></p>` : ''}
         ${e.note ? `<p class="accent sm">${esc(e.note)}</p>` : ''}
         ${e.notes ? `<p class="exnote sm">${icon('note')} ${esc(e.notes)}</p>` : ''}
       </div>
@@ -634,6 +652,9 @@ function progressView() {
     <div class="tile"><b>${G.streakWeeks(state)}</b><span>Week streak</span></div>
     <div class="tile"><b>${fmtBig(G.toDisplay(totalVol, unit()))}</b><span>${unit()} lifted</span></div>
   </div>
+
+  ${lastWeightsCard()}
+
 
   <section class="card">
     <div class="cardhead"><h3>Strength trend</h3></div>
@@ -758,7 +779,7 @@ function profileView() {
     <label class="field">Name <input type="text" data-field="name" value="${esc(p.name)}" placeholder="Optional"></label>
     <div class="row">
       <label class="field grow">Bodyweight (${p.unit})<input type="number" inputmode="decimal" data-field="bodyweight" value="${W(p.bodyweight)}"></label>
-      <div class="seg">${chip('p-unit', 'kg', 'kg', p.unit === 'kg')}${chip('p-unit', 'lb', 'lb', p.unit === 'lb')}</div>
+      <div class="seg">${chip('p-unit', 'lb', 'lb', p.unit === 'lb')}${chip('p-unit', 'kg', 'kg', p.unit === 'kg')}</div>
     </div>
   </section>
   <section class="card">
@@ -1080,6 +1101,40 @@ function bodyCard() {
     })()}
     ${lineChart(entries.map(e => ({ x: e.t, y: G.toDisplay(e.weight, unit()) })), unit()).replace(/Log this exercise in.*?trend\./, 'Log one more weigh-in to see a trend.')}`
     : '<p class="muted sm">Track bodyweight, body fat and waist over time. Your latest weight also keeps starting-weight estimates accurate.</p>'}
+  </section>`;
+}
+
+/** A session's headline: top set for lifts, best reps or hold for bodyweight, longest distance for cardio. */
+function lastText(d, sets) {
+  if (d.cardio) return setText(d, sets.reduce((a, s) => (s.dist || 0) > (a.dist || 0) ? s : a, sets[0]));
+  const t = G.topSet(sets);
+  if (d.bw && !t.weight) { const r = Math.max(...sets.map(s => s.reps || 0)); return d.timed ? `${r}s` : `${r} reps`; }
+  return `${W(t.weight)} ${unit()} × ${t.reps}`;
+}
+
+/** Change in the headline number since the session before. */
+function lastChange(d, x) {
+  if (!x.prev) return '<small class="muted">first time</small>';
+  const reps = !d.cardio && d.bw && !G.topSet(x.sets).weight;
+  const val = sets => d.cardio ? Math.max(...sets.map(s => s.dist || 0)) : reps ? Math.max(...sets.map(s => s.reps || 0)) : G.topSet(sets).weight || 0;
+  const diff = val(x.sets) - val(x.prev.sets);
+  if (Math.abs(diff) < 0.01) return '<small class="muted">same as last</small>';
+  const amount = d.cardio ? `${D(Math.abs(diff))} ${distUnit()}` : reps ? `${Math.abs(diff)}${d.timed ? 's' : ' reps'}` : `${W(Math.abs(diff))} ${unit()}`;
+  return `<small class="${diff > 0 ? 'up' : 'down'}">${diff > 0 ? '▲' : '▼'} ${amount}</small>`;
+}
+
+function lastWeightsCard() {
+  const rows = G.lastSessions(state).filter(x => EX[x.exId]);
+  if (!rows.length) return '';
+  return `<section class="card">
+    <div class="cardhead"><h3>Last weights</h3><span class="muted sm">${rows.length} exercise${rows.length === 1 ? '' : 's'}</span></div>
+    ${rows.length > 6 ? '<input type="search" class="search" placeholder="Find an exercise" data-field="lastq" aria-label="Find an exercise">' : ''}
+    <div class="lastlist">${rows.map(x => {
+      const d = EX[x.exId];
+      return `<button class="lastrow" data-act="ex-info" data-val="${x.exId}" data-name="${esc(d.name.toLowerCase())}">
+        <span class="grow"><b>${esc(d.name)}</b><small class="muted">${ago(x.date)} · ${x.sets.length} ${d.cardio ? 'interval' : 'set'}${x.sets.length === 1 ? '' : 's'}</small></span>
+        <span class="lastval"><b>${esc(lastText(d, x.sets))}</b>${lastChange(d, x)}</span></button>`;
+    }).join('')}</div>
   </section>`;
 }
 
@@ -1749,6 +1804,11 @@ document.addEventListener('click', e => {
 document.addEventListener('input', e => {
   const el = e.target, f = el.dataset.field;
   if (!f) return;
+  if (f === 'lastq') {
+    const q = el.value.toLowerCase();
+    el.closest('.card').querySelectorAll('.lastrow').forEach(r => r.hidden = !r.dataset.name.includes(q));
+    return;
+  }
   const p = state.profile;
   if (f === 'bodyweight') { const v = parseFloat(el.value); if (v > 0) { p.bodyweight = G.fromDisplay(v, p.unit); state.plan = null; } }
   else if (f === 'name') p.name = el.value.slice(0, 40);

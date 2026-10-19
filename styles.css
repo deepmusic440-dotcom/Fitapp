@@ -380,3 +380,15 @@ button.setn { border: 0; background: none; padding: 8px 0; cursor: pointer; font
 .phototag { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 700; opacity: .8; margin-right: 6px; }
 .phototag .ic { width: 14px; height: 14px; }
 .view.coach:has(.attach) { padding-bottom: calc(240px + var(--safe-b)); }
+
+/* last weights */
+.lastline { color: var(--text); opacity: .85; }
+.lastline b { font-variant-numeric: tabular-nums; }
+.lastlist { display: flex; flex-direction: column; max-height: 420px; overflow-y: auto; margin: 0 -6px; }
+.lastrow { display: flex; align-items: center; gap: 12px; border: 0; background: none; color: inherit; font: inherit; text-align: left; padding: 10px 6px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.lastrow:last-child { border-bottom: 0; }
+.lastrow:active { background: var(--surface-2); }
+.lastrow .grow, .lastval { display: flex; flex-direction: column; gap: 1px; }
+.lastval { align-items: flex-end; text-align: right; flex: none; }
+.lastval b { font-size: 15px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.lastrow small { font-size: 12px; }

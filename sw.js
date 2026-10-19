@@ -1,5 +1,5 @@
 // Offline-first cache for the app shell.
-const CACHE = 'wezza-v6';
+const CACHE = 'wezza-v7';
 const ASSETS = ['./', 'index.html', 'styles.css', 'js/app.js', 'js/engine.js', 'js/data.js', 'js/body.js', 'js/cues.js', 'js/programs.js', 'js/csv.js', 'js/coach.js',
   'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png'];
 

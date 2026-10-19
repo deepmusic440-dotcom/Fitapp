@@ -32,6 +32,8 @@ A free, offline, installable workout app. WeZza builds each workout around how r
 - **Supersets.** Link exercises into a group. Rest only starts after the last exercise of each round.
 - **Set types.** Tap the set number to cycle through working, warm-up (W), drop (D) and failure (F).
 - **Previous-session column**, with a changed weight carried forward to the remaining sets.
+- **Last weights tracker.** Progress lists every exercise with the weight and reps of your last top set, when you did it, and the change from the session before. Train shows "Last: …" on each planned exercise, and each exercise in a workout shows what you did last time.
+- **Pounds by default** (switch to kg in Profile).
 - **Rest timer.** Set it per exercise; it beeps and vibrates at the end.
 - **RPE (optional).** After each set, rate how hard it was from 6 to 10. If the top of the rep range felt easy (RPE ≤ 7), the weight goes up by double the usual step; if it was max effort (RPE 10), the weight stays the same.
 - **Cardio.** Log running, walking, cycling, rowing, elliptical, stair climber, jump rope and swimming as distance and time (km or mi), with pace and distance PRs.
