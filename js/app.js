@@ -1656,7 +1656,7 @@ document.addEventListener('visibilitychange', () => {
     navigator.wakeLock?.request('screen').then(l => wakeLock = l).catch(() => {});
 });
 
-if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+if ('serviceWorker' in navigator && location.protocol !== 'file:' && window.top === window.self) {
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 
