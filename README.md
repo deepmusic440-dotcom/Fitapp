@@ -28,7 +28,11 @@ A free, offline, installable workout app. WeZza builds each workout around how r
 - **Equipment swaps.** Exercises you can't do with your equipment are replaced with the closest alternative.
 
 ### Logging (Strong / Hevy-style)
-- **Routines.** Save any workout or generated plan as a routine. When you reuse it, the weights still progress.
+- **Routine builder.** Create routines from scratch or save any workout: sets, rep ranges, rest per exercise, supersets and notes. Organise them in folders, duplicate and edit them, and start one in a tap. Weights still progress from your history.
+- **Empty workout.** Start a blank session and add exercises as you go; it's named from what you did.
+- **Live PRs.** A trophy appears the moment a set beats your heaviest weight, estimated 1RM or best set volume.
+- **Tap "Previous"** to copy last time's weight and reps into a set.
+- **Remembered per exercise:** rest time and a pinned note (seat height, grip…) that shows every time.
 - **Supersets.** Link exercises into a group. Rest only starts after the last exercise of each round.
 - **Set types.** Tap the set number to cycle through working, warm-up (W), drop (D) and failure (F).
 - **Previous-session column**, with a changed weight carried forward to the remaining sets.
@@ -48,9 +52,15 @@ A free, offline, installable workout app. WeZza builds each workout around how r
 - **The screen stays awake** during a workout.
 
 ### Progress & motivation
-- **Charts** of estimated 1RM over time, weekly volume, and sets per muscle over the last 7 days.
+- **Exercise charts:** estimated 1RM, heaviest weight, session volume, best set or total reps (distance, time or pace for cardio) over 1 month, 3 months, 1 year or all time.
+- **Weekly stats** for workouts, duration, volume and sets over 12 weeks.
+- **Muscle distribution** over 7, 30 or 90 days, compared with the period before.
+- **Monthly report:** totals vs last month, days trained, PRs, top exercises and muscles worked.
+- **Workout summary** compares each session with the last time you did the same routine.
+- **Exercise pages** show the muscles worked on a body map and link to demo videos.
 - **Exercise records:** rep maxes (the best weight for 1, 3, 5, 8… reps), an estimated-1RM chart, and best set volume.
-- **Body tracking.** Log weight, body fat and tape measurements (waist, chest, arm, thigh, hips, neck), with a trend chart and the change in each measurement. Your latest weight feeds the starting-weight estimates.
+- **Progress photos**, kept on the device, with side-by-side comparison. (Not included in backups.)
+- **Body tracking.** Log weight, body fat and tape measurements, each with its own chart, (waist, chest, arm, thigh, hips, neck), with a trend chart and the change in each measurement. Your latest weight feeds the starting-weight estimates.
 - **Weekly goal ring** and weekly streak (Apple Fitness-style).
 - **19 achievements**, including streaks, total tonnage, PRs, bodyweight strength milestones, cardio distance and program sessions.
 - **Calendar** of workouts in the History tab.
@@ -61,6 +71,9 @@ A free, offline, installable workout app. WeZza builds each workout around how r
 - 1RM calculator with a percentage table.
 - Plate calculator, in kg or lb.
 - Interval timer for HIIT, Tabata and EMOM.
+
+### Appearance
+- Light or dark theme, or match the device.
 
 ### Private by design
 - No account and no server: your data stays on the device (localStorage).
@@ -88,6 +101,7 @@ To install it on a phone, deploy to any static host (GitHub Pages, Netlify, …)
 | `js/data.js` | Muscles, equipment, exercise library |
 | `js/programs.js` | Built-in training programs |
 | `js/csv.js` | CSV export, Strong / Hevy import |
+| `js/photos.js` | Progress photos (IndexedDB) |
 | `js/coach.js` | AI coach: prompt context, Claude calls, reply parsing |
 | `js/cues.js` | Form cues per exercise |
 | `js/engine.js` | Recovery model, generator, progression, stats, achievements |

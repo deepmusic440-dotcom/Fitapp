@@ -397,3 +397,54 @@ button.setn { border: 0; background: none; padding: 8px 0; cursor: pointer; font
 .nomatch:not([hidden]) { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 14px 4px; }
 .linkish { cursor: pointer; }
 .linkish:hover { color: var(--accent); }
+
+/* routines: quick start, builder */
+.quickstart { display: flex; flex-direction: column; gap: 8px; }
+.rtlist { display: flex; flex-direction: column; gap: 10px; }
+.rtrow { background: var(--surface-2); border-radius: 14px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.rtrow.ss { border-left: 4px solid var(--ss); }
+.rtrow .cardhead b { font-size: 15px; }
+.rtgrid { display: grid; grid-template-columns: auto 1fr 1fr; gap: 10px; align-items: end; }
+.rtgrid .field { font-size: 12px; min-width: 0; }
+.rtgrid select, .range input { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 8px; font-size: 16px; color: var(--text); width: 100%; min-width: 0; }
+.range { display: flex; align-items: center; gap: 4px; color: var(--muted); }
+.range input { text-align: center; padding: 8px 2px; }
+.stepper { display: inline-flex; align-items: center; gap: 2px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
+.stepper button { border: 0; background: none; color: var(--text); font-size: 18px; width: 34px; height: 36px; cursor: pointer; }
+.stepper b { min-width: 20px; text-align: center; color: var(--text); font-size: 16px; }
+.rtnote { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; font-size: 14px; color: var(--text); width: 100%; }
+.rtrow .chip { align-self: flex-start; padding: 5px 10px; font-size: 12px; display: inline-flex; gap: 4px; align-items: center; }
+.rtrow .chip .ic { width: 14px; height: 14px; }
+@media (max-width: 380px) { .rtgrid { grid-template-columns: 1fr 1fr; } .rtgrid > :first-child { grid-column: 1 / -1; } }
+
+/* live workout extras */
+button.prev { border: 0; background: none; font: inherit; font-size: 13px; text-align: left; padding: 8px 0; cursor: pointer; color: var(--muted); }
+button.prev:active { color: var(--accent); }
+.check .prb { position: absolute; top: -8px; left: -8px; font-size: 14px; font-style: normal; line-height: 1; }
+.pinnote { color: var(--text); background: color-mix(in srgb, var(--accent) 12%, transparent); border-radius: 8px; padding: 4px 8px; display: flex; gap: 6px; align-items: flex-start; }
+.pinnote .ic { width: 15px; height: 15px; margin-top: 2px; }
+
+/* stats & report */
+.reptiles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.reptiles div { background: var(--surface-2); border-radius: 12px; padding: 10px; display: flex; flex-direction: column; gap: 1px; }
+.reptiles b { font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.reptiles span { font-size: 12px; color: var(--muted); }
+.reptiles small { font-size: 11px; }
+.hbar b small { font-size: 11px; font-weight: 600; }
+.vslast { background: var(--surface-2); border-radius: 10px; padding: 8px 10px; }
+
+/* exercise details */
+.exmap .bodymap { max-height: 220px; }
+
+/* progress photos */
+.photostrip { display: flex; gap: 8px; overflow-x: auto; margin: 0 -16px; padding: 0 16px 4px; scrollbar-width: none; }
+.photostrip::-webkit-scrollbar { display: none; }
+.photothumb { flex: none; border: 0; padding: 0; background: none; color: inherit; font: inherit; cursor: pointer; display: flex; flex-direction: column; gap: 4px; align-items: center; }
+.photothumb img { width: 84px; height: 112px; object-fit: cover; border-radius: 10px; display: block; background: var(--surface-2); }
+.photothumb span { font-size: 11px; color: var(--muted); }
+.photofull { width: 100%; border-radius: 14px; display: block; }
+.compare { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.compare figure { margin: 0; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.compare .select { font-size: 13px; padding: 8px; }
+.compare img { width: 100%; border-radius: 12px; display: block; }
+a.btn { text-decoration: none; color: inherit; }

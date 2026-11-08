@@ -329,9 +329,10 @@ export function workoutVolume(w) {
 }
 
 export function personalBests(state, exId, before = Infinity) {
-  let best1rm = 0, bestW = 0, bestReps = 0, bestDist = 0, bestTime = 0, bestSetVol = 0;
+  let best1rm = 0, bestW = 0, bestReps = 0, bestDist = 0, bestTime = 0, bestSetVol = 0, bestSessionVol = 0;
   for (const h of exerciseHistory(state, exId)) {
     if (h.date >= before) continue;
+    bestSessionVol = Math.max(bestSessionVol, h.sets.reduce((a, s) => a + (s.weight || 0) * (s.reps || 0), 0));
     for (const s of h.sets) {
       best1rm = Math.max(best1rm, e1rm(s.weight, s.reps));
       bestW = Math.max(bestW, s.weight || 0);
@@ -341,7 +342,7 @@ export function personalBests(state, exId, before = Infinity) {
       bestSetVol = Math.max(bestSetVol, (s.weight || 0) * (s.reps || 0));
     }
   }
-  return { best1rm, bestW, bestReps, bestDist, bestTime, bestSetVol };
+  return { best1rm, bestW, bestReps, bestDist, bestTime, bestSetVol, bestSessionVol };
 }
 
 /**
@@ -426,11 +427,11 @@ export function weeklyVolume(state, weeks = 8) {
   return out;
 }
 
-export function setsPerMuscle(state, days = 7) {
-  const since = Date.now() - days * 24 * HOUR;
+export function setsPerMuscle(state, days = 7, until = Date.now()) {
+  const since = until - days * 24 * HOUR;
   const out = Object.fromEntries(Object.keys(MUSCLES).map(m => [m, 0]));
   for (const w of state.workouts) {
-    if (w.start < since) continue;
+    if (w.start < since || w.start >= until) continue;
     for (const ex of w.exercises) {
       if (EX[ex.exId]?.cardio) continue;
       const n = workingSets(ex).length;
@@ -439,6 +440,80 @@ export function setsPerMuscle(state, days = 7) {
     }
   }
   return out;
+}
+
+const weekStart = t => { const d = new Date(t); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.getTime(); };
+
+/** Totals for a list of workouts: count, minutes, volume (kg), working sets, reps. */
+export function totals(ws) {
+  let minutes = 0, volume = 0, sets = 0, reps = 0;
+  for (const w of ws) {
+    minutes += ((w.end || w.start) - w.start) / 60000;
+    volume += workoutVolume(w);
+    for (const ex of w.exercises) for (const s of workingSets(ex)) { sets++; if (!EX[ex.exId]?.timed && !EX[ex.exId]?.cardio) reps += s.reps || 0; }
+  }
+  return { count: ws.length, minutes: Math.round(minutes), volume, sets, reps };
+}
+
+/** Week-by-week totals (Monday start), oldest first. */
+export function weeklyStats(state, weeks = 12) {
+  const now = weekStart(Date.now()), out = [];
+  for (let i = weeks - 1; i >= 0; i--) {
+    const start = weekStart(now - i * 7 * 24 * HOUR + 12 * HOUR), end = weekStart(start + 8 * 24 * HOUR);
+    out.push({ start, ...totals(state.workouts.filter(w => w.start >= start && w.start < end)) });
+  }
+  return out;
+}
+
+/** A calendar month's report, with the month before for comparison. month is 0-based. */
+export function monthReport(state, year, month) {
+  const span = (y, m) => [new Date(y, m, 1).getTime(), new Date(y, m + 1, 1).getTime()];
+  const [a, b] = span(year, month), [pa, pb] = span(year, month - 1);
+  const ws = state.workouts.filter(w => w.start >= a && w.start < b);
+  const prev = state.workouts.filter(w => w.start >= pa && w.start < pb);
+  const byEx = {};
+  for (const w of ws) for (const ex of w.exercises) {
+    const n = workingSets(ex).length;
+    if (n && EX[ex.exId]) byEx[ex.exId] = (byEx[ex.exId] || 0) + n;
+  }
+  const days = new Set(ws.map(w => new Date(w.start).getDate()));
+  return {
+    ...totals(ws), prev: totals(prev), days: [...days], prs: ws.flatMap(w => (w.prs || []).map(p => ({ ...p, date: w.start }))),
+    topExercises: Object.entries(byEx).sort((x, y) => y[1] - x[1]).slice(0, 5),
+    muscles: setsPerMuscle(state, (b - a) / (24 * HOUR), b),
+  };
+}
+
+/** Per-session numbers for one exercise, oldest first: heaviest, e1rm, volume, reps, maxReps, bestSet (volume), dist, time. */
+export function sessionMetrics(state, exId) {
+  return exerciseHistory(state, exId).reverse().map(h => ({
+    date: h.date,
+    heaviest: Math.max(0, ...h.sets.map(s => s.weight || 0)),
+    e1rm: Math.max(0, ...h.sets.map(s => e1rm(s.weight, s.reps))),
+    volume: h.sets.reduce((a, s) => a + (s.weight || 0) * (s.reps || 0), 0),
+    reps: h.sets.reduce((a, s) => a + (s.reps || 0), 0),
+    maxReps: Math.max(0, ...h.sets.map(s => s.reps || 0)),
+    bestSet: Math.max(0, ...h.sets.map(s => (s.weight || 0) * (s.reps || 0))),
+    dist: h.sets.reduce((a, s) => a + (s.dist || 0), 0),
+    time: h.sets.reduce((a, s) => a + (s.time || 0), 0),
+  }));
+}
+
+/**
+ * Whether a just-finished set is a record, compared with all saved history and the
+ * other finished sets of this session. Returns a label or null.
+ */
+export function livePR(state, exId, set, sessionSets) {
+  const d = EX[exId];
+  if (!d || d.cardio || set.warmup || !(set.reps > 0) || !exerciseHistory(state, exId).length) return null;
+  const pb = personalBests(state, exId);
+  const others = sessionSets.filter(s => s !== set && s.done && !s.warmup && s.reps > 0);
+  const best = f => Math.max(0, ...others.map(f));
+  if (d.bw && !set.weight) return set.reps > Math.max(pb.bestReps, best(s => s.reps)) ? (d.timed ? 'Longest hold' : 'Most reps') : null;
+  if (set.weight > Math.max(pb.bestW, best(s => s.weight || 0)) + 1e-6) return 'Heaviest weight';
+  if (e1rm(set.weight, set.reps) > Math.max(pb.best1rm, best(s => e1rm(s.weight, s.reps))) * 1.001) return 'Best est. 1RM';
+  if (set.weight * set.reps > Math.max(pb.bestSetVol, best(s => (s.weight || 0) * s.reps)) + 1e-6) return 'Best set volume';
+  return null;
 }
 
 /** Plates per side for a barbell load (kg in, display unit plates out). */

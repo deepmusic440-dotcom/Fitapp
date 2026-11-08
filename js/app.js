@@ -5,6 +5,7 @@ import { CUES } from './cues.js';
 import { PROGRAMS, PROGRAM } from './programs.js';
 import { importCSV, exportCSV } from './csv.js';
 import * as C from './coach.js';
+import * as P from './photos.js';
 
 const KEY = 'wezza.v1';
 const LEGACY_KEYS = ['forge.v1'];
@@ -16,7 +17,7 @@ const DEFAULT = {
   profile: {
     onboarded: false, name: '', goal: 'hypertrophy', level: 'intermediate', sex: 'male',
     bodyweight: G.fromDisplay(165, 'lb'), unit: 'lb', minutes: 45, equipment: Object.keys(EQUIPMENT),
-    excluded: [], favorites: [], warmups: true, core: true, restOverride: 0, sound: true, weeklyGoal: 3, rpe: false,
+    excluded: [], favorites: [], warmups: true, core: true, restOverride: 0, sound: true, weeklyGoal: 3, rpe: false, theme: 'system',
   },
   workouts: [],
   routines: [],
@@ -27,7 +28,11 @@ const DEFAULT = {
   program: null, // { id, day, done, started }
   myPrograms: [], // programs the coach built, same shape as PROGRAMS
   coach: { messages: [] },
-  ui: { tab: 'train', focus: 'auto', custom: [], progressEx: null, calMonth: null, histN: 30 },
+  exPrefs: {}, // per exercise: { rest, note } remembered across workouts
+  ui: {
+    tab: 'train', focus: 'auto', custom: [], progressEx: null, calMonth: null, histN: 30,
+    trendMetric: null, trendRange: 'all', statMetric: 'volume', muscleDays: 7, bodyMetric: 'weight', reportMonth: null,
+  },
   flags: { lbDefault: true }, // one-time migrations already applied
 };
 
@@ -53,6 +58,14 @@ G.registerCustom(state.custom);
 function save() { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch {} }
 
 const progOf = id => PROGRAM[id] || state.myPrograms.find(p => p.id === id);
+// Light or dark: follow the device unless a theme was picked. "Match device" restores whatever the host page set.
+const hostTheme = document.documentElement.dataset.theme;
+function applyTheme() {
+  const root = document.documentElement, t = state.profile.theme;
+  if (t === 'light' || t === 'dark') root.dataset.theme = t;
+  else if (hostTheme) root.dataset.theme = hostTheme;
+  else delete root.dataset.theme;
+}
 const unit = () => state.profile.unit;
 const W = kg => G.fmtW(kg, unit());
 
@@ -294,18 +307,110 @@ function goalRing(size) {
 const SS_COLORS = ['#ff8a3d', '#3ec7ff', '#c084fc', '#ff5c93', '#facc15'];
 const ssColor = g => SS_COLORS[(g.charCodeAt(0) - 65) % SS_COLORS.length];
 
+/** Routines grouped by folder (unfiled first), in the order they were made. */
+function routineFolders() {
+  const groups = new Map();
+  for (const r of state.routines) {
+    const f = r.folder || '';
+    if (!groups.has(f)) groups.set(f, []);
+    groups.get(f).push(r);
+  }
+  return [...groups.entries()].sort((a, b) => a[0] === '' ? -1 : b[0] === '' ? 1 : a[0].localeCompare(b[0]));
+}
+
 function routinesRow() {
   const rs = state.routines;
-  if (!rs.length) return '';
-  return `<section><div class="cardhead"><h3>My routines</h3><span class="muted sm">${rs.length}</span></div>
-    <div class="routines">${rs.map(r => `<button class="routine" data-act="open-routine" data-val="${r.id}">
-      <b>${esc(r.name)}</b><span class="muted sm">${r.exercises.length} exercises</span>
-      <span class="muted sm">${r.exercises.slice(0, 3).map(e => esc(EX[e.exId]?.name || '')).join(', ')}</span></button>`).join('')}</div></section>`;
+  return `<section class="quickstart">
+    <div class="row tight">
+      <button class="btn ghost grow" data-act="start-empty">${icon('play')} Empty workout</button>
+      <button class="btn ghost grow" data-act="rt-new">${icon('plus')} New routine</button>
+    </div>
+    ${rs.length ? routineFolders().map(([f, list]) => `
+      <div class="cardhead"><h3>${f ? esc(f) : 'My routines'}</h3><span class="muted sm">${list.length}</span></div>
+      <div class="routines">${list.map(r => `<button class="routine" data-act="open-routine" data-val="${r.id}">
+        <b>${esc(r.name)}</b><span class="muted sm">${r.exercises.length} exercise${r.exercises.length === 1 ? '' : 's'}</span>
+        <span class="muted sm">${r.exercises.slice(0, 3).map(e => esc(EX[e.exId]?.name || '')).join(', ')}</span></button>`).join('')}</div>`).join('') : ''}
+  </section>`;
 }
 
 function planFromRoutine(r) {
-  const exercises = r.exercises.filter(e => EX[e.exId]).map(e => ({ ...G.buildExercise(state, e.exId, e.sets, e.range), superset: e.superset || null }));
+  const exercises = r.exercises.filter(e => EX[e.exId]).map(e => {
+    const x = { ...G.buildExercise(state, e.exId, e.sets, e.range), superset: e.superset || null };
+    if (EX[e.exId].cardio && e.range?.minutes) x.sets.forEach(s => { s.time = e.range.minutes * 60; });
+    if (e.note) x.notes = e.note;
+    return x;
+  });
   state.plan = { exercises, targets: [], focus: 'routine', title: r.name, routineId: r.id };
+}
+
+// ----- routine builder -----
+let rtDraft = null; // routine being created or edited: { id?, name, folder, exercises: [{ exId, sets, range, superset, note }] }
+
+/** Show HTML in the open modal of this kind, or open one. Keeps scroll position on refresh. */
+function modalIn(kind, html) {
+  const m = $(`.modal.${kind}`);
+  if (!m) return modal(html, `tall ${kind}`);
+  const top = m.scrollTop;
+  m.innerHTML = `<button class="icbtn close" data-act="close-modal" aria-label="Close">${icon('x')}</button>${html}`;
+  m.scrollTop = top;
+  return m.parentElement;
+}
+
+function routineEditor() {
+  const r = rtDraft, folders = [...new Set(state.routines.map(x => x.folder).filter(Boolean))];
+  const restOpts = [0, 30, 45, 60, 75, 90, 120, 150, 180, 240, 300];
+  const rows = r.exercises.map((e, i) => {
+    const d = EX[e.exId]; if (!d) return '';
+    const def = G.scheme(state.profile, d);
+    const rest = e.range?.rest ?? def.rest;
+    const linked = e.superset && r.exercises[i + 1]?.superset === e.superset;
+    return `<div class="rtrow ${e.superset ? 'ss' : ''}" ${e.superset ? `style="--ss:${ssColor(e.superset)}"` : ''}>
+      <div class="cardhead"><b class="grow">${e.superset ? `<span class="sstag" style="--ss:${ssColor(e.superset)}">${esc(e.superset)}</span> ` : ''}${esc(d.name)}</b>
+        <div class="row tight">
+          ${i ? `<button class="icbtn" data-act="rt-move" data-i="${i}" data-val="-1" aria-label="Move up">↑</button>` : ''}
+          ${i < r.exercises.length - 1 ? `<button class="icbtn" data-act="rt-move" data-i="${i}" data-val="1" aria-label="Move down">↓</button>` : ''}
+          <button class="icbtn" data-act="rt-remove" data-i="${i}" aria-label="Remove">${icon('x')}</button>
+        </div></div>
+      <div class="rtgrid">
+        ${d.cardio ? `<label class="field">Minutes<input type="number" inputmode="numeric" data-field="rt-min" data-i="${i}" value="${e.range?.minutes || ''}" placeholder="20"></label>` : `
+        <div class="field">Sets<span class="stepper"><button data-act="rt-sets" data-i="${i}" data-val="-1" aria-label="Fewer sets">−</button><b>${e.sets}</b><button data-act="rt-sets" data-i="${i}" data-val="1" aria-label="More sets">+</button></span></div>
+        <label class="field">${d.timed ? 'Seconds' : 'Reps'}<span class="range"><input type="number" inputmode="numeric" data-field="rt-lo" data-i="${i}" value="${e.range?.lo ?? ''}" placeholder="${def.lo}">–<input type="number" inputmode="numeric" data-field="rt-hi" data-i="${i}" value="${e.range?.hi ?? ''}" placeholder="${def.hi}"></span></label>
+        <label class="field">Rest<select data-field="rt-rest" data-i="${i}">${restOpts.map(v => `<option value="${v}" ${v === rest ? 'selected' : ''}>${v ? fmtDur(v * 1000) : 'Off'}</option>`).join('')}</select></label>`}
+      </div>
+      <input type="text" class="rtnote" data-field="rt-note" data-i="${i}" maxlength="200" value="${esc(e.note || '')}" placeholder="Note: seat height, grip, tempo…">
+      ${i < r.exercises.length - 1 ? `<button class="chip sm" data-act="rt-ss" data-i="${i}">${icon('link')} ${linked ? 'Unlink superset' : 'Superset with next'}</button>` : ''}
+    </div>`;
+  }).join('');
+  modalIn('rt-edit', `<h2>${r.id ? 'Edit routine' : 'New routine'}</h2>
+    <label class="field">Name<input type="text" id="rt-name" data-field="rt-name" maxlength="40" value="${esc(r.name)}" placeholder="e.g. Push Day"></label>
+    <label class="field">Folder (optional)<input type="text" data-field="rt-folder" list="rt-folders" maxlength="30" value="${esc(r.folder || '')}" placeholder="e.g. Hypertrophy block">
+      <datalist id="rt-folders">${folders.map(f => `<option value="${esc(f)}">`).join('')}</datalist></label>
+    <p class="muted sm">Leave reps blank to use your goal's default. Weights come from your history and progress automatically.</p>
+    <div class="rtlist">${rows || '<div class="empty">No exercises yet.</div>'}</div>
+    <button class="btn ghost wide" data-act="rt-add">${icon('plus')} Add exercises</button>
+    <button class="btn primary big" data-act="rt-save">${r.id ? 'Save changes' : 'Save routine'}</button>`);
+}
+
+/** Write a routine entry's range, dropping it when nothing is set. */
+function rtRange(e, patch) {
+  const r = { ...e.range, ...patch };
+  for (const k of Object.keys(r)) if (r[k] == null || r[k] === '' || Number.isNaN(r[k])) delete r[k];
+  if (Object.keys(r).length) e.range = r; else delete e.range;
+}
+
+// ----- per-exercise preferences -----
+const exPref = id => (state.exPrefs[id] ||= {});
+/** Apply remembered rest time to a workout exercise. */
+function withPrefs(e) {
+  const p = state.exPrefs[e.exId];
+  if (p?.rest != null && !EX[e.exId]?.cardio) e.rest = p.rest;
+  return e;
+}
+
+function startEmpty() {
+  state.active = { id: uid(), start: Date.now(), title: '', autoTitle: true, routineId: null, program: null, exercises: [], restEnd: 0, notes: '' };
+  save(); render(); window.scrollTo(0, 0);
+  navigator.wakeLock?.request('screen').then(l => wakeLock = l).catch(() => {});
 }
 
 // ----- programs -----
@@ -581,9 +686,10 @@ function activeExercise(e, i) {
     const rpeAsk = askRpe && s.done && !s.warmup && s.rpe === undefined && a.lastSet?.i === i && a.lastSet?.j === j;
     return `<div class="setrow ${s.done ? 'done' : ''} ${s.warmup ? 'warm' : ''} ${s.kind || ''}">
       ${d.cardio ? `<span class="setn">${label}</span>` : `<button class="setn" data-act="set-kind" data-i="${i}" data-j="${j}" aria-label="Change set type">${label}</button>`}
-      <span class="prev muted">${prevTxt}</span>
+      ${p ? `<button class="prev muted" data-act="copy-prev" data-i="${i}" data-j="${j}" data-pw="${p.weight || 0}" data-pr="${p.reps || 0}" data-pd="${p.dist || 0}" data-pt="${p.time || 0}" title="Use last time's numbers">${prevTxt}</button>`
+        : `<span class="prev muted">${prevTxt}</span>`}
       ${inputs}
-      <button class="check" data-act="toggle-set" data-i="${i}" data-j="${j}" aria-label="Complete set">${icon('check')}${s.rpe ? `<em class="rpe">${s.rpe}</em>` : ''}</button>
+      <button class="check" data-act="toggle-set" data-i="${i}" data-j="${j}" aria-label="Complete set">${icon('check')}${s.rpe ? `<em class="rpe">${s.rpe}</em>` : ''}${s.pr ? `<em class="prb" title="${esc(s.pr)}">🏆</em>` : ''}</button>
     </div>
     ${rpeAsk ? `<div class="rpestrip"><span title="Rate of perceived exertion: how many reps you had left">RPE</span>${[6, 7, 8, 9, 10].map(v =>
       `<button class="chip" data-act="rpe-set" data-i="${i}" data-j="${j}" data-val="${v}" title="${{ 6: '4+ reps left', 7: '3 reps left', 8: '2 reps left', 9: '1 rep left', 10: 'Nothing left' }[v]}">${v}</button>`).join('')}
@@ -599,6 +705,7 @@ function activeExercise(e, i) {
         <p class="muted sm">${d.cardio ? 'Cardio · distance and time' : `${d.primary.map(m => MUSCLES[m].name).join(', ')}${e.target ? ` · target ${e.target.lo === e.target.hi ? e.target.lo : `${e.target.lo}–${e.target.hi}`}${d.timed ? 's' : ' reps'}` : ''}${d.perHand ? ' · per hand' : ''}`}</p>
         ${prevSession ? `<p class="lastline sm">Last time (${ago(prevSession.date)}): <b>${esc(prevSession.sets.map(s => setText(d, s)).join(', '))}</b></p>` : ''}
         ${e.note ? `<p class="accent sm">${esc(e.note)}</p>` : ''}
+        ${state.exPrefs[e.exId]?.note ? `<p class="pinnote sm">${icon('note')} <b>Pinned:</b> ${esc(state.exPrefs[e.exId].note)}</p>` : ''}
         ${e.notes ? `<p class="exnote sm">${icon('note')} ${esc(e.notes)}</p>` : ''}
       </div>
       ${d.bar ? `<button class="icbtn" data-act="plates" data-i="${i}" aria-label="Plate calculator">${icon('plate')}</button>` : ''}
@@ -625,7 +732,7 @@ function progressView() {
   const weekly = G.weeklyVolume(state);
   const thisWeek = weekly.at(-1);
   const totalVol = ws.reduce((a, w) => a + G.workoutVolume(w), 0);
-  const smuscle = G.setsPerMuscle(state);
+
   const trained = [...new Set(ws.flatMap(w => w.exercises.filter(e => G.workingSets(e).length).map(e => e.exId)))];
   let exId = state.ui.progressEx;
   if (!trained.includes(exId)) {
@@ -636,12 +743,20 @@ function progressView() {
   const hist = exId ? G.exerciseHistory(state, exId).reverse() : [];
   const d = EX[exId];
   const useReps = d?.bw && !d.cardio && hist.every(h => h.sets.every(s => !s.weight));
-  const cardioByTime = d?.cardio && hist.every(h => h.sets.every(s => !s.dist));
-  const pts = hist.map(h => ({
-    x: h.date,
-    y: d.cardio ? (cardioByTime ? h.sets.reduce((a, s) => a + (s.time || 0), 0) / 60 : toDist(h.sets.reduce((a, s) => a + (s.dist || 0), 0)))
-      : useReps ? Math.max(...h.sets.map(s => s.reps)) : G.toDisplay(Math.max(...h.sets.map(s => G.e1rm(s.weight, s.reps))), unit()),
-  }));
+  // Chart: what to plot and over how long.
+  const metrics = !d ? [] : d.cardio ? [['dist', 'Distance'], ['time', 'Time'], ['pace', 'Pace']]
+    : useReps ? [['maxReps', d.timed ? 'Longest hold' : 'Best set'], ['reps', d.timed ? 'Total time' : 'Total reps']]
+    : [['e1rm', 'Est. 1RM'], ['heaviest', 'Heaviest'], ['volume', 'Session volume'], ['bestSet', 'Best set'], ['reps', 'Total reps']];
+  const metric = metrics.find(m => m[0] === state.ui.trendMetric)?.[0] || metrics[0]?.[0];
+  const range = state.ui.trendRange || 'all';
+  const since = Date.now() - ({ '1m': 30, '3m': 90, '1y': 365 }[range] ?? 1e6) * 864e5;
+  const yOf = r => ({
+    e1rm: G.toDisplay(r.e1rm, unit()), heaviest: G.toDisplay(r.heaviest, unit()), volume: G.toDisplay(r.volume, unit()),
+    bestSet: G.toDisplay(r.bestSet, unit()), reps: r.reps, maxReps: r.maxReps, dist: toDist(r.dist), time: r.time / 60,
+    pace: r.dist ? r.time / 60 / toDist(r.dist) : 0,
+  })[metric];
+  const pts = exId ? G.sessionMetrics(state, exId).filter(r => r.date >= since).map(r => ({ x: r.date, y: yOf(r) })).filter(p => p.y > 0) : [];
+  const chartUnit = { reps: d?.timed ? 'sec' : 'reps', maxReps: d?.timed ? 'sec' : 'reps', dist: distUnit(), time: 'min', pace: `min/${distUnit()}` }[metric] || unit();
   const pb = exId ? G.personalBests(state, exId) : null;
   const km = G.totalDistance(ws), kmWeek = G.totalDistance(ws.filter(w => w.start >= thisWeek.start));
 
@@ -653,6 +768,7 @@ function progressView() {
     <div class="tile"><b>${fmtBig(G.toDisplay(totalVol, unit()))}</b><span>${unit()} lifted</span></div>
   </div>
 
+  ${monthCard()}
   ${lastWeightsCard()}
 
 
@@ -667,7 +783,9 @@ function progressView() {
       <div><b>${W(pb.bestW)}</b><span>Heaviest (${unit()})</span></div>`}
       <div><b>${hist.length}</b><span>Sessions</span></div>
     </div>` : ''}
-    ${lineChart(pts, d.cardio ? (cardioByTime ? 'min' : distUnit()) : useReps ? (d.timed ? 'sec' : 'reps') : unit())}
+    <div class="chips scroll">${metrics.map(([k, l]) => chip('ui-set', k, l, k === metric, 'data-key="trendMetric"')).join('')}</div>
+    <div class="seg">${[['1m', '1M'], ['3m', '3M'], ['1y', '1Y'], ['all', 'All']].map(([k, l]) => chip('ui-set', k, l, k === range, 'data-key="trendRange"')).join('')}</div>
+    ${lineChart(pts, chartUnit).replace(/Log this exercise in.*?trend\./, pts.length ? 'Not enough sessions in this period to draw a trend.' : 'No sessions in this period.')}
   </section>
 
   ${km ? `<section class="card">
@@ -679,20 +797,88 @@ function progressView() {
     </div>
   </section>` : ''}
 
-  <section class="card">
-    <div class="cardhead"><h3>Weekly volume</h3><span class="muted sm">${unit()} × reps</span></div>
-    ${barChart(weekly.map(w => ({ label: new Date(w.start).toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' }), value: G.toDisplay(w.volume, unit()) })))}
-  </section>
-
-  <section class="card">
-    <div class="cardhead"><h3>Sets per muscle · last 7 days</h3><span class="muted sm">10–20 is a good target</span></div>
-    <div class="hbars">${Object.entries(smuscle).sort((a, b) => b[1] - a[1]).map(([m, v]) => `
-      <div class="hbar"><span>${MUSCLES[m].name}</span><i><em style="width:${Math.min(100, v / 20 * 100)}%;${v >= 10 ? '' : 'opacity:.55'}"></em></i><b>${+v.toFixed(1)}</b></div>`).join('')}
-    </div>
-  </section>
+  ${weeklyStatsCard()}
+  ${muscleCard()}
   ${bodyCard()}
   ${badgesCard()}
   ${toolsCard()}`;
+}
+
+function weeklyStatsCard() {
+  const stat = state.ui.statMetric || 'volume';
+  const weeks = G.weeklyStats(state, 12);
+  const val = w => ({ count: w.count, minutes: w.minutes, volume: G.toDisplay(w.volume, unit()), sets: w.sets })[stat];
+  const avg = weeks.reduce((a, w) => a + val(w), 0) / weeks.length;
+  const unitLabel = { count: 'workouts', minutes: 'min', volume: unit(), sets: 'sets' }[stat];
+  return `<section class="card">
+    <div class="cardhead"><h3>Weekly stats</h3><span class="muted sm">avg ${stat === 'volume' ? fmtBig(avg) : +avg.toFixed(1)} ${unitLabel}/week</span></div>
+    <div class="seg">${[['count', 'Workouts'], ['minutes', 'Duration'], ['volume', 'Volume'], ['sets', 'Sets']].map(([k, l]) => chip('ui-set', k, l, k === stat, 'data-key="statMetric"')).join('')}</div>
+    ${barChart(weeks.map(w => ({ label: new Date(w.start).toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' }), value: val(w) })))}
+  </section>`;
+}
+
+/** Sets per muscle over the chosen window, against the same-length window before it. */
+function muscleCard() {
+  const days = +(state.ui.muscleDays || 7);
+  const cur = G.setsPerMuscle(state, days), prev = G.setsPerMuscle(state, days, Date.now() - days * 864e5);
+  const goal = 20 * days / 7, max = Math.max(goal, ...Object.values(cur));
+  return `<section class="card">
+    <div class="cardhead"><h3>Muscle distribution</h3><span class="muted sm">${days === 7 ? '10–20 sets a week is a good target' : `vs the ${days} days before`}</span></div>
+    <div class="seg">${[[7, '7 days'], [30, '30 days'], [90, '90 days']].map(([k, l]) => chip('ui-set', k, l, k === days, 'data-key="muscleDays"')).join('')}</div>
+    <div class="hbars">${Object.entries(cur).sort((a, b) => b[1] - a[1]).map(([m, v]) => {
+      const ch = v - prev[m];
+      return `<div class="hbar"><span>${MUSCLES[m].name}</span><i><em style="width:${Math.min(100, v / max * 100)}%;${v >= goal / 2 ? '' : 'opacity:.55'}"></em></i>
+        <b>${+v.toFixed(1)}${Math.abs(ch) >= 0.5 ? ` <small class="${ch > 0 ? 'up' : 'down'}">${ch > 0 ? '+' : '−'}${+Math.abs(ch).toFixed(1)}</small>` : ''}</b></div>`;
+    }).join('')}</div>
+  </section>`;
+}
+
+const fmtHM = min => min >= 60 ? `${Math.floor(min / 60)}h ${Math.round(min % 60)}m` : `${Math.round(min)}m`;
+const reportMonth = () => {
+  const now = new Date();
+  return state.ui.reportMonth ? new Date(state.ui.reportMonth) : new Date(now.getFullYear(), now.getMonth(), 1);
+};
+
+function monthCard() {
+  const m = new Date(), r = G.monthReport(state, m.getFullYear(), m.getMonth());
+  return `<button class="card promo" data-act="report">${icon('calendar')}
+    <div class="grow"><b>Monthly report</b><p class="muted sm">${m.toLocaleDateString(undefined, { month: 'long' })} so far: ${r.count} workout${r.count === 1 ? '' : 's'} · ${r.sets} sets · ${r.prs.length} PR${r.prs.length === 1 ? '' : 's'}</p></div></button>`;
+}
+
+function reportModal() {
+  const m = reportMonth(), y = m.getFullYear(), mo = m.getMonth();
+  const r = G.monthReport(state, y, mo);
+  const now = new Date(), future = y > now.getFullYear() || (y === now.getFullYear() && mo >= now.getMonth());
+  const cmp = (cur, prev, fmt) => {
+    if (!cur && !prev) return '';
+    const d = cur - prev;
+    return Math.abs(d) < 0.5 ? '<small class="muted">same as last month</small>' : `<small class="${d > 0 ? 'up' : 'down'}">${d > 0 ? '▲' : '▼'} ${fmt(Math.abs(d))} vs last month</small>`;
+  };
+  const days = new Date(y, mo + 1, 0).getDate(), lead = (new Date(y, mo, 1).getDay() + 6) % 7;
+  const cal = [...Array(lead).fill('<span></span>'), ...Array.from({ length: days }, (_, k) =>
+    `<span class="day ${r.days.includes(k + 1) ? 'on' : ''}">${k + 1}</span>`)].join('');
+  const muscles = Object.entries(r.muscles).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]).slice(0, 8);
+  const top = Math.max(1, ...muscles.map(x => x[1]));
+  modalIn('report', `<div class="cardhead">
+      <button class="icbtn" data-act="report-move" data-val="-1" aria-label="Previous month">‹</button>
+      <div class="center"><p class="eyebrow">Monthly report</p><h2>${m.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}</h2></div>
+      <button class="icbtn" data-act="report-move" data-val="1" aria-label="Next month" ${future ? 'disabled' : ''}>›</button>
+    </div>
+    <div class="reptiles">
+      <div><b>${r.count}</b><span>Workouts</span>${cmp(r.count, r.prev.count, v => v)}</div>
+      <div><b>${fmtHM(r.minutes)}</b><span>Time training</span>${cmp(r.minutes, r.prev.minutes, fmtHM)}</div>
+      <div><b>${fmtBig(G.toDisplay(r.volume, unit()))}</b><span>${unit()} lifted</span>${cmp(G.toDisplay(r.volume, unit()), G.toDisplay(r.prev.volume, unit()), fmtBig)}</div>
+      <div><b>${r.sets}</b><span>Sets</span>${cmp(r.sets, r.prev.sets, v => v)}</div>
+    </div>
+    <h3>Days trained</h3>
+    <div class="cal">${['M', 'T', 'W', 'T', 'F', 'S', 'S'].map(d => `<em>${d}</em>`).join('')}${cal}</div>
+    ${r.prs.length ? `<h3>🏆 ${r.prs.length} personal record${r.prs.length === 1 ? '' : 's'}</h3>
+      <div class="prlist">${r.prs.slice(0, 8).map(p => `<div>${esc(EX[p.exId]?.name || '')} — ${p.kind} <b>${prText(p)}</b></div>`).join('')}</div>` : ''}
+    ${r.topExercises.length ? `<h3>Most trained exercises</h3>${r.topExercises.map(([id, n]) =>
+      `<div class="pick static"><span>${esc(EX[id].name)}</span><b>${n} sets</b></div>`).join('')}` : ''}
+    ${muscles.length ? `<h3>Muscles worked</h3><div class="hbars">${muscles.map(([k, v]) =>
+      `<div class="hbar"><span>${MUSCLES[k].name}</span><i><em style="width:${v / top * 100}%"></em></i><b>${+v.toFixed(1)}</b></div>`).join('')}</div>` : ''}
+    ${r.count ? '' : '<p class="muted">No workouts logged this month.</p>'}`);
 }
 
 function lineChart(pts, label) {
@@ -802,6 +988,8 @@ function profileView() {
     ${toggle('core', 'Add a core finisher')}
     ${toggle('sound', 'Beep & vibrate when rest ends')}
     ${toggle('rpe', 'Ask how hard each set felt (RPE 6–10). Easy sets earn bigger jumps')}
+    <h3>Appearance</h3>
+    <div class="chips">${[['system', 'Match device'], ['light', 'Light'], ['dark', 'Dark']].map(([k, l]) => chip('p-theme', k, l, (p.theme || 'system') === k)).join('')}</div>
     <h3>Rest timer</h3>
     <div class="chips">${[[0, 'Auto'], [45, '45s'], [60, '60s'], [90, '90s'], [120, '2m'], [180, '3m']].map(([v, l]) => chip('p-rest', v, l, p.restOverride === v)).join('')}</div>
   </section>
@@ -818,11 +1006,11 @@ function profileView() {
       : '<p class="muted sm">Not following a program. Smart workouts are built from your recovery instead.</p>'}
   </section>
   <section class="card">
-    <div class="cardhead"><h3>Routines</h3><span class="muted sm">${state.routines.length}</span></div>
-    ${state.routines.length ? state.routines.map(r => `<div class="pick static"><b>${esc(r.name)}</b>
+    <div class="cardhead"><h3>Routines</h3><button class="btn ghost sm" data-act="rt-new">${icon('plus')} New</button></div>
+    ${state.routines.length ? routineFolders().map(([f, list]) => `${f ? `<p class="eyebrow">${esc(f)}</p>` : ''}${list.map(r => `<div class="pick static"><b>${esc(r.name)}</b>
       <div class="row tight"><button class="chip" data-act="open-routine" data-val="${r.id}">Open</button>
-      <button class="chip" data-act="delete-routine" data-val="${r.id}">Delete</button></div></div>`).join('')
-      : '<p class="muted sm">Save any workout as a routine to reuse it — the weights still progress automatically.</p>'}
+      <button class="chip" data-act="rt-edit" data-val="${r.id}">Edit</button></div></div>`).join('')}`).join('')
+      : '<p class="muted sm">Build a routine from scratch, or save any workout as one. Weights still progress automatically.</p>'}
   </section>
   <section class="card">
     <h3>Your data</h3>
@@ -933,7 +1121,8 @@ function matchesQuery(text, q) {
 function pickerModal(title, list, act, ctx, i) {
   const adding = act === 'do-add';
   const note = e => !G.available(state, e) ? (state.profile.excluded.includes(e.id) ? ' · excluded' : ' · not in your equipment') : '';
-  const m = modal(`<h2>${title}</h2>
+  const building = act === 'rt-pick';
+  const m = modal(`<div class="cardhead"><h2>${title}</h2>${building ? '<button class="btn primary sm" data-act="rt-done">Done</button>' : ''}</div>
     <input type="search" class="search" placeholder="Search ${list.length} exercises" data-field="search">
     ${adding ? `<button class="btn ghost sm" data-act="custom-ex" data-ctx="${ctx}">${icon('plus')} Create custom exercise</button>` : ''}
     <div class="chips scroll" id="mfilter">${chip('mfilter', '', 'All', true)}${Object.entries(MUSCLES).map(([k, v]) => chip('mfilter', k, v.name, false)).join('')}</div>
@@ -958,6 +1147,11 @@ function pickerModal(title, list, act, ctx, i) {
     if (make) make.dataset.prefill = q;
   };
   m.addEventListener('input', filter);
+  if (building) {
+    // Closing the picker goes back to the routine being edited.
+    $('.close', m).dataset.act = 'rt-done';
+    m.addEventListener('click', e => { if (e.target === m) setTimeout(routineEditor); });
+  }
   m.addEventListener('click', e => {
     const c = e.target.closest('[data-act=mfilter]');
     if (!c) return;
@@ -986,6 +1180,10 @@ function exInfo(id) {
       ${d.primary.map(m => `<span class="tag primary">${MUSCLES[m].name}</span>`).join('')}
       ${d.secondary.map(m => `<span class="tag">${MUSCLES[m].name}</span>`).join('')}
     </div>
+    <div class="exmap">${bodyMap(Object.fromEntries([...d.secondary.map(m => [m, 55]), ...d.primary.map(m => [m, 12])]))}</div>
+    <p class="muted sm center">Red: main muscles · yellow: assisting muscles</p>
+    <a class="btn ghost wide" href="https://www.youtube.com/results?search_query=${encodeURIComponent(`${d.name} exercise proper form`)}" target="_blank" rel="noopener">${icon('play')} Watch a demo video</a>
+    ${state.exPrefs[id]?.note ? `<p class="pinnote">${icon('note')} <b>Pinned:</b> ${esc(state.exPrefs[id].note)}</p>` : ''}
     <div class="pbrow">${d.cardio ? `
       <div><b>${pb.bestDist ? D(pb.bestDist) : '—'}</b><span>Longest (${distUnit()})</span></div>
       <div><b>${isFinite(bestPace) && bestPace ? fmtPace({ dist: 1, time: bestPace }).split('/')[0] : '—'}</b><span>Best pace /${distUnit()}</span></div>
@@ -999,7 +1197,7 @@ function exInfo(id) {
     ${maxes.length ? `<h3>Records</h3>
       <table class="pct"><tr><th>Reps</th><th>Best (${unit()})</th><th>Est. 1RM</th></tr>
       ${maxes.map(r => `<tr><td>${r.n}</td><td>${W(r.w)}</td><td>${W(G.e1rm(r.w, r.n))}</td></tr>`).join('')}</table>
-      <p class="muted sm">Best set volume: ${fmtBig(G.toDisplay(pb.bestSetVol, unit()))} ${unit()} · heaviest: ${W(pb.bestW)} ${unit()}</p>` : ''}
+      <p class="muted sm">Heaviest: ${W(pb.bestW)} ${unit()} · best set: ${fmtBig(G.toDisplay(pb.bestSetVol, unit()))} ${unit()} · best session: ${fmtBig(G.toDisplay(pb.bestSessionVol, unit()))} ${unit()}</p>` : ''}
     ${CUES[id] ? `<h3>How to</h3><ol class="cues">${CUES[id].map(c => `<li>${esc(c)}</li>`).join('')}</ol>` : ''}
     ${hist.length ? `<h3>Recent sessions</h3>${hist.slice(0, 5).map(h => `<div class="detail-ex"><span class="muted sm">${fmtDate(h.date)}</span>
       <p class="sm">${h.sets.map(s => setText(d, s)).join(' · ')}</p></div>`).join('')}` : ''}
@@ -1044,6 +1242,21 @@ function manageExModal() {
   });
 }
 
+/** "vs last time" line for a finished workout: the previous one from the same routine, or with the same title. */
+function vsLast(w) {
+  const prev = state.workouts.filter(x => x.id !== w.id && x.start < w.start && (w.routineId ? x.routineId === w.routineId : x.title === w.title))
+    .sort((a, b) => b.start - a.start)[0];
+  if (!prev) return '';
+  const a = G.totals([w]), b = G.totals([prev]);
+  const part = (cur, old, label, fmt) => {
+    const d = cur - old;
+    if (Math.abs(d) < 0.5) return `${label} same`;
+    return `<span class="${d > 0 ? 'up' : 'down'}">${label} ${d > 0 ? '▲' : '▼'} ${fmt(Math.abs(d), old)}</span>`;
+  };
+  const pct = (d, old) => old ? `${Math.round(d / old * 100)}%` : fmtBig(G.toDisplay(d, unit()));
+  return `<p class="vslast sm">vs last time (${ago(prev.start)}): ${part(a.volume, b.volume, 'volume', pct)} · ${part(a.sets, b.sets, 'sets', d => d)} · ${part(a.minutes, b.minutes, 'time', d => fmtHM(d))}</p>`;
+}
+
 function summaryModal(w) {
   const vol = G.workoutVolume(w);
   const sets = w.exercises.reduce((a, e) => a + G.workingSets(e).length, 0);
@@ -1057,6 +1270,7 @@ function summaryModal(w) {
       <div><b>${sets}</b><span>Sets</span></div>
       <div><b>${fmtBig(G.toDisplay(vol, unit()))}</b><span>${unit()} volume</span></div>
     </div>
+    ${vsLast(w)}
     ${w.prs.length ? `<h3>🏆 ${w.prs.length} new personal record${w.prs.length > 1 ? 's' : ''}</h3>
       <div class="prlist">${w.prs.map(p => `<div>${esc(EX[p.exId].name)} — ${p.kind} <b>${prText(p)}</b></div>`).join('')}</div>` : ''}
     ${w.badges?.length ? `<h3>New achievement${w.badges.length > 1 ? 's' : ''} unlocked</h3>
@@ -1130,9 +1344,71 @@ function bodyCard() {
       }).filter(Boolean);
       return rows.length ? `<p class="measures sm">${rows.join('')}<span class="muted">${lenUnit()}</span></p>` : '';
     })()}
-    ${lineChart(entries.map(e => ({ x: e.t, y: G.toDisplay(e.weight, unit()) })), unit()).replace(/Log this exercise in.*?trend\./, 'Log one more weigh-in to see a trend.')}`
-    : '<p class="muted sm">Track bodyweight, body fat and waist over time. Your latest weight also keeps starting-weight estimates accurate.</p>'}
+    ${(() => {
+      // One chart at a time, for any measurement that has been logged.
+      const opts = [['weight', 'Weight', unit()], ['fat', 'Body fat', '%'], ...MEASURES.map(([k, l]) => [k, l, lenUnit()])]
+        .filter(([k]) => entries.some(e => e[k]));
+      const [k, , u] = opts.find(o => o[0] === state.ui.bodyMetric) || opts[0];
+      const val = e => k === 'weight' ? G.toDisplay(e.weight, unit()) : k === 'fat' ? e.fat : toLen(e[k]);
+      return (opts.length > 1 ? `<div class="chips scroll">${opts.map(([key, l]) => chip('ui-set', key, l, key === k, 'data-key="bodyMetric"')).join('')}</div>` : '')
+        + lineChart(entries.filter(e => e[k]).map(e => ({ x: e.t, y: val(e) })), u).replace(/Log this exercise in.*?trend\./, 'Log one more entry to see a trend.');
+    })()}`
+    : '<p class="muted sm">Track bodyweight, body fat and tape measurements over time. Your latest weight also keeps starting-weight estimates accurate.</p>'}
+    <div class="cardhead"><h3>Progress photos</h3>
+      <label class="btn ghost sm">${icon('camera')} Add<input type="file" accept="image/*" data-field="body-photo" hidden></label></div>
+    ${photoStrip()}
   </section>`;
+}
+
+// ----- progress photos (IndexedDB) -----
+let photoCache = null, photoLoading = false, photoUrls = [];
+function photoStrip() {
+  if (photoCache === null) {
+    if (!photoLoading) {
+      photoLoading = true;
+      P.listPhotos().then(list => {
+        photoCache = list; photoLoading = false;
+        if (state.ui.tab === 'progress' && !state.active && !$('.modal-wrap')) render();
+      });
+    }
+    return '<p class="muted sm">Loading photos…</p>';
+  }
+  if (!photoCache.length) return '<p class="muted sm">Take a photo every few weeks to see changes the scale misses. Photos stay on this device and aren’t included in backups.</p>';
+  return `<div class="photostrip">${photoCache.map(p => `<button class="photothumb" data-act="photo-view" data-val="${p.id}">
+      <img src="${p.thumb}" alt="Progress photo, ${fmtDate(p.t)}"><span>${new Date(p.t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span></button>`).join('')}</div>
+    ${photoCache.length > 1 ? `<button class="btn ghost sm" data-act="photo-compare">Compare photos</button>` : ''}`;
+}
+
+const photoURL = blob => { const u = URL.createObjectURL(blob); photoUrls.push(u); return u; };
+function freePhotoUrls() { photoUrls.forEach(u => URL.revokeObjectURL(u)); photoUrls = []; }
+
+async function photoView(id) {
+  const rec = await P.getPhoto(id).catch(() => null);
+  if (!rec) return toast('That photo is no longer here');
+  freePhotoUrls();
+  modal(`<h2>${fmtDate(rec.t)}</h2><p class="muted sm">${ago(rec.t)}</p>
+    <img class="photofull" src="${photoURL(rec.blob)}" alt="Progress photo, ${fmtDate(rec.t)}">
+    <div class="row">
+      ${photoCache?.length > 1 ? `<button class="btn ghost grow" data-act="photo-compare" data-val="${id}">Compare</button>` : ''}
+      <button class="btn ghost danger grow" data-act="photo-del" data-val="${id}">${icon('trash')} Delete</button>
+    </div>`, 'tall');
+}
+
+/** Two photos side by side; defaults to the oldest and the newest. */
+async function compareModal(a, b) {
+  const list = photoCache || [];
+  a ||= list.at(-1)?.id; b ||= list[0]?.id;
+  const [ra, rb] = await Promise.all([P.getPhoto(a), P.getPhoto(b)]).catch(() => []);
+  if (!ra || !rb) return;
+  freePhotoUrls();
+  const pick = (field, cur) => `<select class="select" data-field="${field}">${list.map(p =>
+    `<option value="${p.id}" ${p.id === cur ? 'selected' : ''}>${fmtDate(p.t)}</option>`).join('')}</select>`;
+  const gap = Math.round(Math.abs(rb.t - ra.t) / 864e5);
+  modalIn('cmp', `<h2>Compare photos</h2><p class="muted sm">${gap} day${gap === 1 ? '' : 's'} apart</p>
+    <div class="compare">
+      <figure>${pick('cmp-a', a)}<img src="${photoURL(ra.blob)}" alt="Progress photo, ${fmtDate(ra.t)}"></figure>
+      <figure>${pick('cmp-b', b)}<img src="${photoURL(rb.blob)}" alt="Progress photo, ${fmtDate(rb.t)}"></figure>
+    </div>`);
 }
 
 /** A session's headline: top set for lifts, best reps or hold for bodyweight, longest distance for cardio. */
@@ -1295,7 +1571,8 @@ function exMenu(i) {
       <button data-act="swap" data-ctx="active" data-i="${i}">${icon('swap')} Swap exercise</button>
       ${i < list.length - 1 ? `<button data-act="ss-link" data-i="${i}">${icon('link')} ${e.superset && list[i + 1].superset === e.superset ? 'Unlink from next' : 'Superset with next'}</button>` : ''}
       ${e.superset ? `<button data-act="ss-unlink" data-i="${i}">${icon('link')} Remove from superset</button>` : ''}
-      <button data-act="ex-note" data-i="${i}">${icon('note')} ${e.notes ? 'Edit note' : 'Add note'}</button>
+      <button data-act="ex-note" data-i="${i}">${icon('note')} ${e.notes ? 'Edit note for today' : 'Note for today'}</button>
+      <button data-act="ex-pin" data-val="${d.id}">${icon('note')} ${state.exPrefs[d.id]?.note ? 'Edit pinned note' : 'Pinned note (shows every time)'}</button>
       <button data-act="ex-rest" data-i="${i}">${icon('timer')} Rest timer</button>
       ${i > 0 ? `<button data-act="ex-move" data-i="${i}" data-val="-1">↑ Move up</button>` : ''}
       ${i < list.length - 1 ? `<button data-act="ex-move" data-i="${i}" data-val="1">↓ Move down</button>` : ''}
@@ -1307,12 +1584,24 @@ function exMenu(i) {
 function routineModal(id) {
   const r = state.routines.find(x => x.id === id);
   if (!r) return;
-  modal(`<h2>${esc(r.name)}</h2>
-    <p class="muted sm">Created ${fmtDate(r.created)} · weights progress automatically from your history</p>
-    ${r.exercises.map(e => `<div class="detail-ex"><h4>${e.superset ? `<span class="sstag" style="--ss:${ssColor(e.superset)}">${esc(e.superset)}</span> ` : ''}${esc(EX[e.exId]?.name || 'Deleted exercise')}</h4><p class="muted sm">${e.sets} sets</p></div>`).join('')}
-    <button class="btn primary big" data-act="load-routine" data-val="${r.id}">Load routine</button>
-    <div class="row"><button class="btn ghost grow" data-act="rename-routine" data-val="${r.id}">${icon('note')} Rename</button>
-    <button class="btn ghost danger grow" data-act="delete-routine" data-val="${r.id}">${icon('trash')} Delete</button></div>`);
+  const last = [...state.workouts].filter(w => w.routineId === r.id).sort((a, b) => b.start - a.start)[0];
+  const detail = e => {
+    const d = EX[e.exId]; if (!d) return '';
+    if (d.cardio) return e.range?.minutes ? `${e.range.minutes} min` : '';
+    const g = { ...G.scheme(state.profile, d), ...e.range };
+    return `${e.sets} sets · ${g.lo === g.hi ? g.lo : `${g.lo}–${g.hi}`}${d.timed ? 's' : ' reps'} · rest ${g.rest ? fmtDur(g.rest * 1000) : 'off'}`;
+  };
+  modal(`<p class="eyebrow">${r.folder ? esc(r.folder) : 'Routine'}</p><h2>${esc(r.name)}</h2>
+    <p class="muted sm">${r.exercises.length} exercises${last ? ` · last done ${ago(last.start)}` : ''} · weights progress automatically from your history</p>
+    ${r.exercises.map(e => `<div class="detail-ex"><h4>${e.superset ? `<span class="sstag" style="--ss:${ssColor(e.superset)}">${esc(e.superset)}</span> ` : ''}${esc(EX[e.exId]?.name || 'Deleted exercise')}</h4>
+      <p class="muted sm">${detail(e)}</p>${e.note ? `<p class="exnote sm">${esc(e.note)}</p>` : ''}</div>`).join('')}
+    <button class="btn primary big" data-act="start-routine" data-val="${r.id}">${icon('play')} Start workout</button>
+    <div class="row wrap">
+      <button class="btn ghost grow" data-act="load-routine" data-val="${r.id}">Load into Train</button>
+      <button class="btn ghost grow" data-act="rt-edit" data-val="${r.id}">${icon('edit')} Edit</button>
+      <button class="btn ghost grow" data-act="rt-dup" data-val="${r.id}">Duplicate</button>
+      <button class="btn ghost danger grow" data-act="delete-routine" data-val="${r.id}">${icon('trash')} Delete</button>
+    </div>`);
 }
 
 function saveRoutine(src) {
@@ -1384,7 +1673,7 @@ function startWorkout() {
   state.active = {
     id: uid(), start: Date.now(),
     title: plan.title || workoutTitle(plan.exercises), routineId: plan.routineId || null, program: plan.program || null,
-    exercises: structuredClone(plan.exercises), restEnd: 0, notes: '',
+    exercises: structuredClone(plan.exercises).map(withPrefs), restEnd: 0, notes: '',
   };
   state.plan = null;
   save(); render();
@@ -1416,7 +1705,7 @@ function finishWorkout() {
     .map(({ exId, sets, superset, notes, range }) => ({ exId, sets: sets.filter(s => s.done), superset: superset || null, notes: notes || '', ...(range ? { range } : {}) }));
   const w = {
     id: a.editing && a.editing !== 'new' ? a.editing : a.id, start: a.start, end: Math.max(a.end, a.start + 60e3),
-    title: a.title || workoutTitle(exercises), notes: a.notes || '', exercises,
+    title: (!a.autoTitle && a.title) || workoutTitle(exercises), notes: a.notes || '', exercises,
     ...(a.program ? { program: a.program } : {}), ...(a.imported ? { imported: true } : {}),
   };
   if (a.editing) {
@@ -1562,7 +1851,11 @@ const actions = {
 
     return 'keep';
   },
-  'do-add': (v, el) => { target(el.dataset.ctx).push(G.buildExercise(state, v)); closeModal(); },
+  'do-add': (v, el) => {
+    const e = G.buildExercise(state, v);
+    target(el.dataset.ctx).push(el.dataset.ctx === 'active' ? withPrefs(e) : e);
+    closeModal();
+  },
   'toggle-set': (_, el) => {
     const i = +el.dataset.i, j = +el.dataset.j;
     const ex = state.active.exercises[i], s = ex.sets[j];
@@ -1584,7 +1877,15 @@ const actions = {
       state.active.restEnd = !last && rest && !state.active.editing ? Date.now() + rest * 1000 : 0;
       state.active.lastSet = { i, j };
       navigator.vibrate?.(30);
-    } else delete s.rpe;
+      // Records are checked against saved history, so not while editing a saved workout.
+      const pr = state.active.editing ? null : G.livePR(state, ex.exId, s, ex.sets);
+      if (pr) { s.pr = pr; toast(`🏆 New PR · ${pr}`); navigator.vibrate?.([40, 60, 40]); } else delete s.pr;
+    } else { delete s.rpe; delete s.pr; }
+  },
+  'copy-prev': (_, el) => {
+    const s = state.active.exercises[+el.dataset.i].sets[+el.dataset.j], d = el.dataset;
+    if (EX[state.active.exercises[+el.dataset.i].exId].cardio) { s.dist = +d.pd; s.time = +d.pt; }
+    else { s.weight = +d.pw; s.reps = +d.pr; }
   },
   'rpe-set': (v, el) => {
     const s = state.active.exercises[+el.dataset.i].sets[+el.dataset.j];
@@ -1704,6 +2005,23 @@ const actions = {
   reset: () => confirmThen('Erase all workouts and settings on this device?', { ok: 'Erase everything', danger: true },
     () => { state = structuredClone(DEFAULT); }),
   'p-goalw': v => { state.profile.weeklyGoal = +v; },
+  'p-theme': v => { state.profile.theme = v; applyTheme(); },
+  'ui-set': (v, el) => { state.ui[el.dataset.key] = /^\d+$/.test(v) ? +v : v; },
+  report: () => { state.ui.reportMonth = null; reportModal(); return 'keep'; },
+  'report-move': v => {
+    const m = reportMonth();
+    state.ui.reportMonth = new Date(m.getFullYear(), m.getMonth() + +v, 1).getTime();
+    reportModal(); return 'keep';
+  },
+  'photo-view': v => { photoView(v); return 'keep'; },
+  'photo-compare': v => { compareModal(v && v !== photoCache?.[0]?.id ? v : null, null); return 'keep'; },
+  'photo-del': v => {
+    ask('Delete this photo? This can’t be undone.', { ok: 'Delete', danger: true }).then(yes => {
+      if (!yes) return;
+      P.deletePhoto(v).then(() => { photoCache = null; freePhotoUrls(); closeModal(); render(); toast('Photo deleted'); });
+    });
+    return 'keep';
+  },
   'cal-move': v => {
     const now = new Date();
     const m = state.ui.calMonth ? new Date(state.ui.calMonth) : new Date(now.getFullYear(), now.getMonth(), 1);
@@ -1712,6 +2030,55 @@ const actions = {
   // routines
   'save-routine': v => { saveRoutine(v); return 'keep'; },
   'open-routine': v => { routineModal(v); return 'keep'; },
+  'start-routine': v => { closeModal(); planFromRoutine(state.routines.find(r => r.id === v)); startWorkout(); return 'keep'; },
+  'start-empty': () => { startEmpty(); return 'keep'; },
+  'rt-new': () => { rtDraft = { name: '', folder: '', exercises: [] }; routineEditor(); return 'keep'; },
+  'rt-edit': v => { rtDraft = structuredClone(state.routines.find(r => r.id === v)); routineEditor(); return 'keep'; },
+  'rt-dup': v => {
+    const r = state.routines.find(x => x.id === v);
+    const copy = { ...structuredClone(r), id: uid(), name: `${r.name} (copy)`.slice(0, 40), created: Date.now() };
+    state.routines.splice(state.routines.indexOf(r) + 1, 0, copy);
+    closeModal(); toast('Routine duplicated');
+  },
+  'rt-add': () => {
+    const have = rtDraft.exercises.map(e => e.exId);
+    pickerModal('Add exercises', EXERCISES.filter(e => !have.includes(e.id)), 'rt-pick', 'routine');
+    return 'keep';
+  },
+  'rt-pick': (v, el) => {
+    const d = EX[v];
+    rtDraft.exercises.push({ exId: v, sets: d.cardio ? 1 : G.scheme(state.profile, d).sets, superset: null });
+    el.hidden = true; el.classList.add('picked');
+    toast(`Added ${d.name}`);
+    return 'keep';
+  },
+  'rt-done': () => { routineEditor(); return 'keep'; },
+  'rt-sets': (v, el) => { const e = rtDraft.exercises[+el.dataset.i]; e.sets = Math.max(1, Math.min(10, e.sets + +v)); routineEditor(); return 'keep'; },
+  'rt-move': (v, el) => {
+    const l = rtDraft.exercises, i = +el.dataset.i, j = i + +v;
+    [l[i], l[j]] = [l[j], l[i]]; cleanSupersets(l); routineEditor(); return 'keep';
+  },
+  'rt-remove': (_, el) => { rtDraft.exercises.splice(+el.dataset.i, 1); cleanSupersets(rtDraft.exercises); routineEditor(); return 'keep'; },
+  'rt-ss': (_, el) => {
+    const l = rtDraft.exercises, i = +el.dataset.i, a = l[i], b = l[i + 1];
+    if (a.superset && b.superset === a.superset) b.superset = null;
+    else {
+      const used = new Set(l.map(x => x.superset).filter(Boolean));
+      a.superset = b.superset = a.superset || b.superset || 'ABCDEFGHIJ'.split('').find(c => !used.has(c));
+    }
+    cleanSupersets(l); routineEditor(); return 'keep';
+  },
+  'rt-save': () => {
+    const r = rtDraft;
+    r.name = r.name.trim(); r.folder = (r.folder || '').trim();
+    if (!r.name) { toast('Give the routine a name'); $('#rt-name')?.focus(); return 'keep'; }
+    if (!r.exercises.length) { toast('Add at least one exercise'); return 'keep'; }
+    if (!r.folder) delete r.folder;
+    if (r.id) state.routines = state.routines.map(x => x.id === r.id ? r : x);
+    else state.routines.push({ ...r, id: uid(), created: Date.now() });
+    rtDraft = null; closeModal(); toast('Routine saved');
+  },
+
   'load-routine': v => {
     planFromRoutine(state.routines.find(r => r.id === v));
     state.ui.tab = 'train'; closeModal(); window.scrollTo(0, 0);
@@ -1757,7 +2124,21 @@ const actions = {
       <div class="chips">${[0, 30, 45, 60, 90, 120, 150, 180, 240, 300].map(v => `<button class="chip ${e.rest === v ? 'on' : ''}" data-act="ex-rest-set" data-i="${i}" data-val="${v}">${v ? fmtDur(v * 1000) : 'Off'}</button>`).join('')}</div>`);
     return 'keep';
   },
-  'ex-rest-set': (v, el) => { state.active.exercises[+el.dataset.i].rest = +v; closeModal(); },
+  'ex-rest-set': (v, el) => {
+    const e = state.active.exercises[+el.dataset.i];
+    e.rest = +v; exPref(e.exId).rest = +v; // remembered for next time
+    closeModal(); toast(`Rest for ${EX[e.exId].name} set to ${+v ? fmtDur(+v * 1000) : 'off'}`);
+  },
+  'ex-pin': v => {
+    ask(`Pinned note for ${EX[v].name}. It shows every time you do this exercise.`, { input: state.exPrefs[v]?.note || '', ok: 'Save' })
+      .then(n => {
+        if (n == null) return;
+        const p = exPref(v);
+        if (n.trim()) p.note = n.trim().slice(0, 200); else delete p.note;
+        save(); render();
+      });
+    return 'keep';
+  },
   'ex-move': (v, el) => {
     const list = state.active.exercises, i = +el.dataset.i, j = i + +v;
     [list[i], list[j]] = [list[j], list[i]];
@@ -1855,6 +2236,16 @@ document.addEventListener('click', e => {
 document.addEventListener('input', e => {
   const el = e.target, f = el.dataset.field;
   if (!f) return;
+  if (f.startsWith('rt-') && rtDraft) {
+    const e = rtDraft.exercises[+el.dataset.i], n = parseInt(el.value, 10);
+    if (f === 'rt-name') rtDraft.name = el.value.slice(0, 40);
+    else if (f === 'rt-folder') rtDraft.folder = el.value.slice(0, 30);
+    else if (f === 'rt-note') { if (el.value.trim()) e.note = el.value.slice(0, 200); else delete e.note; }
+    else if (f === 'rt-lo') rtRange(e, { lo: n > 0 ? Math.min(300, n) : null });
+    else if (f === 'rt-hi') rtRange(e, { hi: n > 0 ? Math.min(300, n) : null });
+    else if (f === 'rt-min') rtRange(e, { minutes: n > 0 ? Math.min(600, n) : null });
+    return;
+  }
   if (f === 'lastq') {
     const q = el.value.toLowerCase();
     el.closest('.card').querySelectorAll('.lastrow').forEach(r => r.hidden = !matchesQuery(r.dataset.name, q));
@@ -1897,6 +2288,15 @@ document.addEventListener('input', e => {
 document.addEventListener('change', e => {
   const el = e.target, f = el.dataset.field;
   if (!f) return;
+  if (f === 'rt-rest' && rtDraft) { rtRange(rtDraft.exercises[+el.dataset.i], { rest: +el.value }); return; }
+  if (f === 'cmp-a' || f === 'cmp-b') { compareModal($('[data-field=cmp-a]').value, $('[data-field=cmp-b]').value); return; }
+  if (f === 'body-photo') {
+    const file = el.files[0]; if (!file) return;
+    el.value = '';
+    C.prepareImage(file).then(img => P.addPhoto(img)).then(() => { photoCache = null; render(); toast('Photo saved'); })
+      .catch(e => toast(e?.code ? C.errorText(e.code) : 'Couldn’t save that photo on this device'));
+    return;
+  }
   if (f.startsWith('t-')) { state.profile[f.slice(2)] = el.checked; state.plan = null; save(); }
   else if (f === 'progressEx') { state.ui.progressEx = el.value; save(); render(); }
   else if (f === 'bodyweight' && state.profile.onboarded) { render(); }
@@ -1987,6 +2387,7 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:' && window.top 
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 
+applyTheme();
 render();
 C.coachMode().then(async m => {
   coachMode = m;
